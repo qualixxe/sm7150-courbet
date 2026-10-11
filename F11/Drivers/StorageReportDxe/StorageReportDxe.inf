@@ -37,7 +37,13 @@
 
 [Protocols]
   gEfiBlockIoProtocolGuid              ## CONSUMES
-  gEfiEventReadyToBootGuid             ## CONSUMES
+
+#
+# Not under [Protocols]: gEfiEventReadyToBootGuid is a GUID, not a protocol,
+# and the build rejects it there with "Value of Protocol is not found".
+#
+[Guids]
+  gEfiEventReadyToBootGuid
 
 #
 # Nothing is required for it to run: a report is useful precisely when the machine
