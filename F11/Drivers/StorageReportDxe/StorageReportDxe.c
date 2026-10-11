@@ -1,5 +1,5 @@
 /** @file
-  Storage Report - prints the block devices and their partitions.
+  Storage Report - prints the block devices and their partitions at boot.
 
   Why this exists
   ---------------
@@ -7,9 +7,10 @@
   the phone has no keyboard attached, so nothing can be typed into it. The Shell
   is useless here for the one job it was wanted for.
 
-  So the same information is produced by an application that needs no input at
-  all: the user picks it from the menu with the mouse, and it prints what it
-  found on the screen that is already there.
+  So the information is put on the screen without any input at all: this driver
+  runs at ReadyToBoot, when the graphical output is already up, prints what it
+  found, and holds the screen for a while so it can be read or photographed
+  before the menu draws over it.
 
   What it prints
   --------------
@@ -20,24 +21,34 @@
   nothing either. A partition name needs no filesystem, which is exactly what is
   missing everywhere else.
 
+  Why a driver and not a menu entry
+  ---------------------------------
+  A menu entry needs a UI section, which needs a FILE block in the FDF, and a
+  FILE block makes GenFds look for the .efi in the workspace while the module is
+  really in the build output. It fails with "not found in packages path" however
+  the path is written, because the build output path carries the toolchain and
+  architecture in it. A plain INF line resolves itself.
+
   On the partition structure
   --------------------------
   EFI_PARTITION_INFO_PROTOCOL is declared here rather than included. The
   Protocol/Partition.h header does not exist in this edk2 revision, and adding a
-  header to a submodule that is pinned by SHA is not something worth doing for
-  one structure. The layout is fixed by PI 1.8 and has not changed.
-
-  Usage: from the application menu, pick "Storage Report". It prints and returns
-  to the menu by itself.
+  header to a submodule that is pinned by SHA is not worth doing for one
+  structure. The layout is fixed by PI 1.8 and has not changed.
 **/
 
 #include <Uefi.h>
 #include <Library/UefiLib.h>
 #include <Library/UefiBootServicesTableLib.h>
+#include <Library/UefiDriverEntryPoint.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Protocol/BlockIo.h>
 
-#define PROGRESS_SECONDS 6
+//
+// How long the report stays on the screen. Long enough to read off the phone,
+// short enough not to look like a hang.
+//
+#define REPORT_HOLD_SECONDS 20
 
 //
 // EFI_PARTITION_INFO_PROTOCOL, PI 1.8 section 10.5.
@@ -53,10 +64,10 @@ typedef struct {
 } EFI_PARTITION_INFO_PROTOCOL;
 
 //
-// The GUID variable has to exist as well as the macro. Declaring only the macro
-// leaves every use of it undefined, which is exactly what happened on the first
-// attempt. Named without the usual gEfi prefix so it cannot clash if a header
-// that does define it ever appears.
+// The GUID variable has to exist as well as the value. Declaring only a macro
+// leaves every use of it undefined, which is what happened on the first attempt.
+// Named without the usual gEfi prefix so it cannot clash if a header that does
+// define it ever appears.
 //
 EFI_GUID  gStorageReportPartitionInfoGuid =
   { 0x8cf2f62c, 0xbc9b, 0x4821, { 0x9d, 0x14, 0x98, 0x9a, 0x78, 0xbe, 0x2e, 0xc5 } };
@@ -134,8 +145,8 @@ PrintBlockDevice (
 
     //
     // PartitionName is null when the entry carries no name, which happens for
-    // an MBR partition and for a zeroed GPT slot. Both are printed anyway, so
-    // the list of sizes is complete either way.
+    // an MBR partition and for a zeroed GPT slot. Those are printed anyway, so
+    // the list of sizes stays complete either way.
     //
     Print (L"        %-20s %6lu MB   LBA %lu..%lu\r\n",
            (ThisPart->PartitionName != NULL) ? ThisPart->PartitionName : L"<no name>",
@@ -150,44 +161,29 @@ PrintBlockDevice (
 }
 
 /**
-  Entry point. Waits for the drivers to settle, then prints everything.
+  Put the whole report on the screen.
 
-  @param[in] ImageHandle  Image handle of this application. Typed EFI_HANDLE
-                          rather than EFI_IMAGE_HANDLE because the latter is no
-                          longer declared by Uefi.h in this edk2 revision and
-                          the build rejects it as an unknown type.
-  @param[in] SystemTable  System table.
-
-  @retval EFI_SUCCESS  Always. This is a report, there is nothing to fail at.
+  No arguments beyond the event's, and it returns nothing: this is called from an
+  event notification and must not affect the boot result.
 **/
-EFI_STATUS
+STATIC
+VOID
 EFIAPI
-UefiApplicationEntryPoint (
-  IN EFI_HANDLE        ImageHandle,
-  IN EFI_SYSTEM_TABLE  *SystemTable
+StorageReportReadyToBoot (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
   )
 {
   EFI_HANDLE  *Buffer;
   UINTN       NoHandles;
   EFI_STATUS  Status;
   UINTN       Index;
-  UINTN       Seconds;
   EFI_HANDLE  *SecondBuffer;
   UINTN       SecondCount;
 
-  //
-  // Drivers connect over time and a partition table shows up well after the
-  // last splash. Reporting an empty list because nothing had connected yet would
-  // be worse than useless, so wait first and look again afterwards.
-  //
-  for (Seconds = 0; Seconds < PROGRESS_SECONDS; Seconds++) {
-    gST->ConOut->OutputString (gST->ConOut, L".");
-    gBS->Stall (1000000);
-  }
-  gST->ConOut->OutputString (gST->ConOut, L"\r\n");
-
+  Print (L"\r\n");
   Print (L"========================================================\r\n");
-  Print (L"  STORAGE REPORT\r\n");
+  Print (L"  STORAGE REPORT - no keyboard needed\r\n");
   Print (L"========================================================\r\n");
 
   Status = gBS->LocateHandleBuffer (
@@ -200,47 +196,90 @@ UefiApplicationEntryPoint (
   if (EFI_ERROR (Status) || (NoHandles == 0) || (Buffer == NULL)) {
     Print (L"\r\nNo BlockIo handle exists at all.\r\n");
     Print (L"The storage driver never registered anything.\r\n");
-    Print (L"\r\nBack to the menu in 10 seconds.\r\n");
-    gBS->Stall (10000000);
-    return EFI_SUCCESS;
-  }
-
-  Print (L"\r\n%u block device(s):\r\n", (UINT32)NoHandles);
-  for (Index = 0; Index < NoHandles; Index++) {
-    PrintBlockDevice (Buffer[Index], Index);
-  }
-
-  //
-  // Look a second time. A larger list means drivers connected while this was
-  // printing, so the first pass was simply too early to mean anything, and that
-  // is worth saying out loud rather than leaving a wrong answer on screen.
-  //
-  SecondBuffer = NULL;
-  SecondCount  = 0;
-  Status       = gBS->LocateHandleBuffer (
-                          ByProtocol,
-                          &gEfiBlockIoProtocolGuid,
-                          NULL,
-                          &SecondCount,
-                          &SecondBuffer
-                          );
-  if (!EFI_ERROR (Status) && (SecondCount > NoHandles)) {
-    Print (L"\r\nRe-checked later: %u block device(s) now exist, so more\r\n", (UINT32)SecondCount);
-    Print (L"drivers connected while this was printing. Full list:\r\n");
-    for (Index = 0; Index < SecondCount; Index++) {
-      PrintBlockDevice (SecondBuffer[Index], Index);
+  } else {
+    Print (L"\r\n%u block device(s):\r\n", (UINT32)NoHandles);
+    for (Index = 0; Index < NoHandles; Index++) {
+      PrintBlockDevice (Buffer[Index], Index);
     }
-    FreePool (SecondBuffer);
+
+    //
+    // Look a second time. A larger list means drivers connected while this was
+    // printing, so the first pass was simply too early to mean anything, and
+    // that is worth saying rather than leaving a wrong answer on screen.
+    //
+    SecondBuffer = NULL;
+    SecondCount  = 0;
+    Status       = gBS->LocateHandleBuffer (
+                            ByProtocol,
+                            &gEfiBlockIoProtocolGuid,
+                            NULL,
+                            &SecondCount,
+                            &SecondBuffer
+                            );
+    if (!EFI_ERROR (Status) && (SecondCount > NoHandles)) {
+      Print (L"\r\nRe-checked: %u now exist, more drivers connected.\r\n", (UINT32)SecondCount);
+      for (Index = 0; Index < SecondCount; Index++) {
+        PrintBlockDevice (SecondBuffer[Index], Index);
+      }
+      FreePool (SecondBuffer);
+    }
+    FreePool (Buffer);
   }
-  FreePool (Buffer);
 
   Print (L"\r\n--------------------------------------------------------\r\n");
   Print (L"  A partition of tens of GB means the controller enumerated\r\n");
   Print (L"  it and storage works. UEFI still cannot mount it: only Fat\r\n");
-  Print (L"  is in this build and the phone's partitions are ext4 and\r\n");
-  Print (L"  f2fs, so the File Manager would show nothing either way.\r\n");
-  Print (L"\r\nBack to the menu in 15 seconds.\r\n");
-  gBS->Stall (15000000);
+  Print (L"  is in this build and these partitions are ext4 and f2fs.\r\n");
+  Print (L"\r\nMenu in %d seconds.\r\n", REPORT_HOLD_SECONDS);
 
-  return EFI_SUCCESS;
+  gBS->Stall (REPORT_HOLD_SECONDS * 1000000);
+}
+
+/**
+  Driver entry. Registers for ReadyToBoot and returns.
+
+  @param[in] ImageHandle  Image handle.
+  @param[in] SystemTable  System table.
+
+  @retval EFI_SUCCESS     The report is scheduled.
+  @retval EFI_NOT_READY   The event could not be created.
+**/
+EFI_STATUS
+EFIAPI
+StorageReportEntryPoint (
+  IN EFI_HANDLE        ImageHandle,
+  IN EFI_SYSTEM_TABLE  *SystemTable
+  )
+{
+  EFI_EVENT  ReadyToBoot;
+  EFI_STATUS Status;
+
+  ReadyToBoot = NULL;
+
+  //
+  // Registering rather than printing here matters. At this point in DXE the
+  // graphics output is not up yet and none of the drivers have connected, so
+  // anything printed now would go nowhere and describe nothing.
+  //
+  Status = gBS->CreateEvent (
+                  EVT_NOTIFY_SIGNAL,
+                  TPL_CALLBACK,
+                  StorageReportReadyToBoot,
+                  NULL,
+                  &ReadyToBoot
+                  );
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = gBS->RegisterProtocolNotify (
+                  &gEfiEventReadyToBootGuid,
+                  ReadyToBoot,
+                  NULL
+                  );
+  if (EFI_ERROR (Status)) {
+    gBS->CloseEvent (ReadyToBoot);
+  }
+
+  return Status;
 }

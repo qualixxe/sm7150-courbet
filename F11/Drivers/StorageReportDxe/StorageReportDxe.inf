@@ -1,21 +1,23 @@
 #/** @file
 #
-#  Storage Report - an application that prints the block devices and their
-#  partition names without needing any input.
+#  Storage Report - a driver that prints the block devices and their partition
+#  names without needing any input.
 #
 #  It exists because the UEFI Shell has the right commands but the phone has no
-#  keyboard, so nothing can be typed into it. Launched from the menu with the
-#  mouse, this prints the same information and returns by itself.
+#  keyboard, so nothing can be typed into it. Reading a report off the screen
+#  needs either a menu entry or a delay at boot, and a menu entry needs a FILE
+#  block in the FDF that the build cannot resolve. Printing at ReadyToBoot and
+#  holding the screen needs neither.
 #
-#**/
+**/
 
 [Defines]
   INF_VERSION                    = 0x00010005
   BASE_NAME                      = StorageReportDxe
   FILE_GUID                      = 3f2a71c4-58d0-4b19-9e6a-0c2f5b8d71a3
-  MODULE_TYPE                    = UEFI_APPLICATION
+  MODULE_TYPE                    = DXE_DRIVER
   VERSION_STRING                 = 1.0
-  ENTRY_POINT                    = UefiApplicationEntryPoint
+  ENTRY_POINT                    = StorageReportEntryPoint
 
 [Sources]
   StorageReportDxe.c
@@ -25,7 +27,7 @@
   MdeModulePkg/MdeModulePkg.dec
 
 [LibraryClasses]
-  UefiApplicationEntryPoint
+  UefiDriverEntryPoint
   UefiBootServicesTableLib
   UefiLib
   BaseLib
@@ -35,12 +37,11 @@
 
 [Protocols]
   gEfiBlockIoProtocolGuid              ## CONSUMES
+  gEfiEventReadyToBootGuid             ## CONSUMES
 
 #
-# Nothing is required for it to run: a report is useful precisely when the
-# machine is in a bad state, so it must not depend on the very things it is
-# reporting on. It is an application, not a driver, so it is dispatched by the
-# user from the menu rather than by the dispatcher at all.
+# Nothing is required for it to run: a report is useful precisely when the machine
+# is in a bad state, so it must not depend on the very things it is reporting on.
 #
 [Depex]
   TRUE

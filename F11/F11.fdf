@@ -235,24 +235,17 @@ READ_LOCK_STATUS   = TRUE
 !endif #$(INCLUDE_TFTP_COMMAND)
 
   #
-  # Lists every BlockIo device and its partitions by name, on the screen, with
-  # no keyboard involved. The Shell has the same information but there is no
-  # way to type a command into it on this phone, so it answers nothing here.
+  # Prints every BlockIo device and its partitions by name, on the screen, with
+  # no keyboard involved. The Shell has the same information but there is no way
+  # to type a command into it on this phone, so it answers nothing here.
   #
-  # Written as an explicit FILE block rather than a bare INF line, because a bare
-  # line produces an FFS file with no UI section and no name. The menu then has
-  # nothing to label the entry with and leaves it out entirely: the first build
-  # was in the image and nowhere on screen.
+  # It is a driver rather than a menu entry. A menu entry needs a UI section,
+  # which means a FILE block in the FDF, and a FILE block makes GenFds look for
+  # the .efi in the workspace while the module is really in the build output, so
+  # it stops with "not found in packages path" however the path is written. A
+  # plain INF resolves itself and needs none of that.
   #
-  FILE DRIVER = 3f2a71c4-58d0-4b19-9e6a-0c2f5b8d71a3 {
-    #
-    # Relative to F11/, like every other PE32 path in this file, because GenFfs
-    # resolves them against the platform directory and not the repository root.
-    # With the F11/ prefix the build stops with "not found in packages path".
-    #
-    SECTION PE32 = Drivers/StorageReportDxe/StorageReportDxe.efi
-    SECTION UI = "Storage Report"
-  }
+  INF F11/Drivers/StorageReportDxe/StorageReportDxe.inf
 
 
 #INF F11/Drivers/LogoDxe/LogoDxe.inf
