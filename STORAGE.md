@@ -231,3 +231,41 @@ So the ramdisk route is worth doing first, but mostly because it is cheap and it
 settles what the partitions actually are. Whether it can carry the installer is a
 separate question, and the first boot will tell us: `linux-prep/init` tries to
 mount userdata read-only and reports what it finds.
+## The sm7325 driver switch is what broke boot
+
+Two builds were compared, each differing from the other by one variable.
+
+The build with every driver on its sm7325 variant, plus Storage Report, booted
+in a loop. The build with every driver back on sm7150, plus the same Storage
+Report, booted normally and reached the menu. The application is therefore not
+the cause, and the driver switch is.
+
+What the switch changed, all of which run at DXE entry and touch hardware:
+
+    ClockDxe          sm7150 -> sm7325
+    SmemDxe           sm7150 -> sm7325
+    SPMI              sm7150 -> sm7325
+    UsbPwrCtrlDxe     sm7150 -> sm7325
+    UsbfnDwc3Dxe      sm7150 -> sm7325
+    plus DDRInfoDxe, HALIOMMU, NpaDxe, ShmBridgeDxeLA added
+
+The reasoning behind the switch was sound and the evidence for it was checked:
+each sm7325 build had its depex satisfied by the image, so all of them dispatch.
+Dispatching is not the same as being correct for this SoC. ClockDxe programs
+clock registers at offsets belonging to a different chip, and a driver that
+writes the wrong offsets does not fail, it takes the board down.
+
+So the sm7325 set from dopaemon/edk2-msm-binary is not usable on this device,
+even though it is nominally the SoC-matched one. That is consistent with
+everything else found earlier: sm7325/PmicDxe needs protocols that exist nowhere
+in the repository, and sm7325/UFSDxe has the same character.
+
+Consequence: the working baseline is sm7150 for everything, and dxe.inc and
+sweet.inc were reverted to it. The sm7325 UFSDxe went back too. It cost nothing
+measurable to give up, because the File Manager cannot mount ext4 either way, so
+the switch never bought anything that could be seen.
+
+The absence of a fallback cost real time here. Every image published under
+dist/ already had the sm7325 drivers, because the publishing step was added after
+that change, so there was no build on file of the configuration that was known
+to boot. Publishing has to cover the known-good state, not just the newest one.
