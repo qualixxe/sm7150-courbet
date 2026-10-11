@@ -245,7 +245,12 @@ READ_LOCK_STATUS   = TRUE
   # was in the image and nowhere on screen.
   #
   FILE DRIVER = 3f2a71c4-58d0-4b19-9e6a-0c2f5b8d71a3 {
-    SECTION PE32 = F11/Drivers/StorageReportDxe/StorageReportDxe.efi
+    #
+    # Relative to F11/, like every other PE32 path in this file, because GenFfs
+    # resolves them against the platform directory and not the repository root.
+    # With the F11/ prefix the build stops with "not found in packages path".
+    #
+    SECTION PE32 = Drivers/StorageReportDxe/StorageReportDxe.efi
     SECTION UI = "Storage Report"
   }
 
