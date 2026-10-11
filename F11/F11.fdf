@@ -239,7 +239,15 @@ READ_LOCK_STATUS   = TRUE
   # no keyboard involved. The Shell has the same information but there is no
   # way to type a command into it on this phone, so it answers nothing here.
   #
-  INF F11/Drivers/StorageReportDxe/StorageReportDxe.inf
+  # Written as an explicit FILE block rather than a bare INF line, because a bare
+  # line produces an FFS file with no UI section and no name. The menu then has
+  # nothing to label the entry with and leaves it out entirely: the first build
+  # was in the image and nowhere on screen.
+  #
+  FILE DRIVER = 3f2a71c4-58d0-4b19-9e6a-0c2f5b8d71a3 {
+    SECTION PE32 = F11/Drivers/StorageReportDxe/StorageReportDxe.efi
+    SECTION UI = "Storage Report"
+  }
 
 
 #INF F11/Drivers/LogoDxe/LogoDxe.inf
