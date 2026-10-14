@@ -1,4 +1,4 @@
-// per-device BSP DXEs
+# per-device BSP DXEs
 # FILE DRIVER = 8e9bd160-b184-11df-94e2-0800200c9a66 {
 #     SECTION DXE_DEPEX = Dxe/EFI_Binaries/Drivers/Devices/sweet/DALSYSDxe/DALSYSDxe.depex
 #     SECTION PE32 = Dxe/EFI_Binaries/Drivers/Devices/sweet/DALSYSDxe/DALSYSDxe.efi
@@ -29,10 +29,10 @@ FILE DRIVER = 94f8a6a7-dc34-4101-88c1-99179cceae83 {
     SECTION UI = "UsbfnDwc3Dxe"
 }
 
-// USB host (OTG keyboard/mouse): sweet binaries, wired for sm7150/sm7325.
-// XhciDxe deliberately has no DXE_DEPEX: its stock depex wants IOMMU
-// protocols (HALIOMMU is off in this tree); as a binding driver it
-// attaches once XhciPciEmulation publishes PCI I/O. If it hangs, revert.
+# USB host (OTG keyboard/mouse): sweet binaries, wired for sm7150/sm7325.
+# XhciDxe deliberately has no DXE_DEPEX: its stock depex wants IOMMU
+# protocols (HALIOMMU is off in this tree); as a binding driver it
+# attaches once XhciPciEmulation publishes PCI I/O. If it hangs, revert.
 FILE DRIVER = de2184cc-c141-45c3-9640-fdd784df785e {
     SECTION DXE_DEPEX = Dxe/EFI_Binaries/Drivers/Devices/sweet/UsbInitDxe/UsbInitDxe.depex
     SECTION PE32 = Dxe/EFI_Binaries/Drivers/Devices/sweet/UsbInitDxe/UsbInitDxe.efi
@@ -65,13 +65,13 @@ FILE DRIVER = 4d41f597-51e5-49e3-ba3b-5cb8a28aa41b {
     SECTION UI = "UsbMsdDxe"
 }
 
-// Type-C DRP role switch: REMOVED 2026-10-14 - hangs at EntryPoint
-// (its depex wants IOMMU which is off here; without depex it crashes).
-// Host role must come from UsbConfig ID-pin handling instead.
-//FILE DRIVER = c71b4c64-83a5-46bc-8f3e-fab41b1b74a3 {
-//    SECTION PE32 = Dxe/EFI_Binaries/Drivers/Devices/sweet/UsbcSetDrpDxe/UsbcSetDrpDxe.efi
-//    SECTION UI = "UsbcSetDrpDxe"
-//}
+# Type-C DRP role switch: REMOVED 2026-10-14 - hangs at EntryPoint
+# (its depex wants IOMMU which is off here; without depex it crashes).
+# Host role must come from UsbConfig ID-pin handling instead.
+#FILE DRIVER = c71b4c64-83a5-46bc-8f3e-fab41b1b74a3 {
+#    SECTION PE32 = Dxe/EFI_Binaries/Drivers/Devices/sweet/UsbcSetDrpDxe/UsbcSetDrpDxe.efi
+#    SECTION UI = "UsbcSetDrpDxe"
+#}
 
 # FILE DRIVER = 5776232E-082D-4B75-9A0E-FE1D13F7A5D9 {
 #     SECTION DXE_DEPEX = Dxe/EFI_Binaries/Drivers/Devices/sweet/PmicDxe/PmicDxeLa.depex
@@ -85,7 +85,7 @@ FILE DRIVER = 4d41f597-51e5-49e3-ba3b-5cb8a28aa41b {
 #     SECTION UI = "HALIOMMU"
 # }
 
-// Mainline device tree blob
+# Mainline device tree blob
 # FILE FREEFORM = 25462CDA-221F-47DF-AC1D-259CFAA4E326 {
 # 	 SECTION RAW = sm7150-xiaomi-sweet.dtb
 # }

@@ -10,13 +10,22 @@ Both boards are the same SoC:
 | | sweet | courbet |
 |---|---|---|
 | device | Redmi Note 10 Pro | Mi 11 Lite 4G |
-| SoC | SM7325, Snapdragon 732G | SM7325, Snapdragon 732G |
+| SoC | SM7150-AC, Snapdragon 732G | SM7150-AC, Snapdragon 732G |
+| kernel name | `qcom,sdmmagpie` | `qcom,sdmmagpie` |
 
 Same silicon, so the firmware carries over; what differs between the boards is
 the device tree. That is the same reasoning that made the surya UEFI boot on
 courbet.
 
-This is the important part, and it is not true of the surya firmware this
+There is no SM7325. An earlier revision of this table said SM7325, which does
+not exist as a part. The evidence is in courbet's own tree: `qcom,msm-id =
+<0x16d>` (365 = SM7150) and `qcom,pmic-name = "PM6150"`. Run
+
+    python tools/fdt.py work/sm7150-sweet/courbet.dtb --node /
+
+to see it rather than take it on trust.
+
+This is also the important part, and it is not true of the surya firmware this
 repository's parent project used: **the sweet firmware drives internal UFS
 storage.** That was the blocker for reaching Windows at all, because without a
 storage driver the firmware cannot read any installation medium.
