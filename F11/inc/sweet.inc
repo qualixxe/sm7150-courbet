@@ -65,6 +65,14 @@ FILE DRIVER = 4d41f597-51e5-49e3-ba3b-5cb8a28aa41b {
     SECTION UI = "UsbMsdDxe"
 }
 
+// Type-C DRP role switch: lets the port become USB host when an OTG
+// adapter is plugged. Stock depex wants IOMMU (off here), included
+// without depex like XhciDxe; revert if it hangs.
+FILE DRIVER = c71b4c64-83a5-46bc-8f3e-fab41b1b74a3 {
+    SECTION PE32 = Dxe/EFI_Binaries/Drivers/Devices/sweet/UsbcSetDrpDxe/UsbcSetDrpDxe.efi
+    SECTION UI = "UsbcSetDrpDxe"
+}
+
 # FILE DRIVER = 5776232E-082D-4B75-9A0E-FE1D13F7A5D9 {
 #     SECTION DXE_DEPEX = Dxe/EFI_Binaries/Drivers/Devices/sweet/PmicDxe/PmicDxeLa.depex
 #     SECTION PE32 = Dxe/EFI_Binaries/Drivers/Devices/sweet/PmicDxe/PmicDxeLa.efi
