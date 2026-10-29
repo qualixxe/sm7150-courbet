@@ -1,0 +1,371 @@
+name: QEMU TCG bundle
+
+# Builds a self-contained software-emulated machine that runs on the phone:
+#
+#   dist/qemu/courbet-qemu.tar.gz
+#     bin/qemu-system-aarch64   statically linked, TCG only, no /dev/kvm
+#     bin/qemu-img              so a guest disk can be made on the device
+#     bin/busybox               for the guest initramfs
+#     guest/vmlinuz             a real arm64 kernel, Alpine -virt
+#     guest/initrd-smoke.cpio.gz  boots entirely from RAM, runs a timed benchmark
+#     run.sh                    what to type on the phone
+#
+# Why this exists. Windows has to be read from somewhere before it can install,
+# and the firmware cannot read the phone: it ships one filesystem driver, Fat,
+# while every volume here is ext4 or f2fs. Making a FAT volume means editing the
+# GPT, and a wrong GPT on this device means EDL 9008 with an unlock the vendor
+# gates behind an authorized account. So the installer is instead made reachable
+# as a file on userdata, and something that can boot it without the firmware has
+# to exist. QEMU is that something.
+#
+# Why TCG and not KVM. CONFIG_VIRTUALIZATION is not set in the stock, the hmos
+# and the COS13 kernel, and /dev/kvm is absent, so hardware-assisted guests are
+# not available to a binary that touches no flash. Whether the SoC can be handed
+# to EL2 at all is the separate question task A2 asks.
+#
+# Why everything is built from source and linked static. Android has no glibc,
+# and Termux's own QEMU is a bionic build whose shared libraries are referenced
+# by absolute paths inside its private prefix, which means unpacking an app
+# directory on a rooted recovery. A static binary depends only on the kernel's
+# system call interface, so it runs wherever the kernel runs - and nothing else
+# has to be installed on the phone.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'linux-prep/qemu-run.sh'
+      - 'linux-prep/guest-init'
+      - 'tools/mk_initramfs.py'
+      - '.github/workflows/qemu-vm.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    name: static qemu-system-aarch64
+    # 22.04 rather than 24.04 for the same reason as the firmware workflow: the
+    # toolchain pins below are the ones this image is known to carry.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    permissions:
+      contents: write
+    env:
+      # Job level: each run: block is a separate shell, so anything exported in
+      # one step is simply not present in the next. Everything that has to
+      # survive between steps lives here or in $GITHUB_ENV.
+      ZLIB_VER: 1.3.1
+      LIBFFI_VER: 3.4.6
+      PCRE2_VER: 10.42
+      PIXMAN_VER: 0.43.4
+      GLIB_VER: 2.74.7
+      QEMU_VER: 8.2.2
+      BUSYBOX_VER: 1.36.1
+      ALPINE: v3.20
+      CROSS: aarch64-linux-gnu-
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the cross toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+            pkg-config python3-pip python3-setuptools python3-wheel \
+            autoconf libtool gettext texinfo \
+            curl ca-certificates xz-utils bzip2 cpio unzip \
+            flex bison perl ninja-build \
+            qemu-user-static
+          python3 -m pip install --user "meson==1.5.1"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          aarch64-linux-gnu-gcc --version | head -1
+          meson --version 2>/dev/null || true
+
+      - name: Set the cross environment
+        run: |
+          set -euo pipefail
+          # Under RUNNER_TEMP on purpose: it is writable without sudo and lives
+          # as long as the job, so the staged libraries never reach the checkout.
+          echo "STAGE=$RUNNER_TEMP/stage" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/stage"
+          {
+            echo "PKG_CONFIG_LIBDIR=$RUNNER_TEMP/stage/lib/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+            echo "PKG_CONFIG_PATH=$RUNNER_TEMP/stage/lib/pkgconfig"
+            # Static .pc files keep their real requirements in Libs.private, and
+            # without this pkg-config omits them, which shows up as undefined
+            # references to pcre2 and ffi when QEMU links.
+            echo "PKG_CONFIG_ALL_STATIC=1"
+          } >> "$GITHUB_ENV"
+
+      - name: Write the meson cross file
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/aarch64.txt" <<EOF
+          [binaries]
+          c = '${CROSS}gcc'
+          cpp = '${CROSS}g++'
+          ar = '${CROSS}ar'
+          strip = '${CROSS}strip'
+          nm = '${CROSS}nm'
+          pkgconfig = 'pkg-config'
+
+          [host_machine]
+          system = 'linux'
+          cpu_family = 'aarch64'
+          cpu = 'aarch64'
+          endian = 'little'
+
+          [properties]
+          # The runner cannot execute what it is building, so meson must never
+          # try to probe a compiler feature by running the result.
+          needs_exe_wrapper = true
+          EOF
+          cat "$RUNNER_TEMP/aarch64.txt"
+
+      - name: Build zlib
+        run: |
+          set -euo pipefail
+          curl -sSLo z.tar.gz "https://zlib.net/fossils/zlib-$ZLIB_VER.tar.gz"
+          tar xzf z.tar.gz
+          cd "zlib-$ZLIB_VER"
+          CC="${CROSS}gcc" ./configure --prefix="$STAGE" --static
+          make -j"$(nproc)"
+          make install
+          ls -l "$STAGE/lib"/libz.*
+
+      - name: Build libffi
+        run: |
+          set -euo pipefail
+          curl -sSLo ffi.tar.gz \
+            "https://github.com/libffi/libffi/releases/download/v$LIBFFI_VER/libffi-$LIBFFI_VER.tar.gz"
+          tar xzf ffi.tar.gz
+          cd "libffi-$LIBFFI_VER"
+          ./configure --build=x86_64-linux-gnu --host=aarch64-linux-gnu \
+            --prefix="$STAGE" --enable-static --disable-shared \
+            --disable-multi-os-directory --disable-dependency-tracking
+          make -j"$(nproc)"
+          make install
+          ls -l "$STAGE/lib"/libffi*
+
+      - name: Build pcre2
+        run: |
+          set -euo pipefail
+          curl -sSLo pcre2.tar.gz \
+            "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-$PCRE2_VER/pcre2-$PCRE2_VER.tar.gz"
+          tar xzf pcre2.tar.gz
+          cd "pcre2-$PCRE2_VER"
+          ./configure --build=x86_64-linux-gnu --host=aarch64-linux-gnu \
+            --prefix="$STAGE" --enable-static --disable-shared \
+            --disable-cpp --without-readline --without-zlib --without-bzip2 \
+            --disable-dependency-tracking
+          make -j"$(nproc)"
+          make install
+          ls -l "$STAGE/lib"/libpcre2-8.a "$STAGE/lib/pkgconfig/libpcre2-8.pc"
+
+      - name: Build pixman
+        run: |
+          set -euo pipefail
+          curl -sSLo px.tar.xz \
+            "https://xorg.freedesktop.org/releases/individual/lib/pixman-$PIXMAN_VER.tar.xz"
+          tar xf px.tar.xz
+          cd "pixman-$PIXMAN_VER"
+          meson setup build --prefix="$STAGE" \
+            --cross-file "$RUNNER_TEMP/aarch64.txt" \
+            --default-library=static -Dtests=disabled -Dlibpng=disabled \
+            -Dcpu=base
+          ninja -C build
+          ninja -C build install
+          ls -l "$STAGE/lib"/libpixman-1.a
+
+      - name: Build glib
+        run: |
+          set -euo pipefail
+          curl -sSLo glib.tar.xz \
+            "https://download.gnome.org/sources/glib/${GLIB_VER%.*}/glib-$GLIB_VER.tar.xz"
+          tar xf glib.tar.xz
+          cd "glib-$GLIB_VER"
+
+          # pcre2 and libffi have to be external: the release tarball carries
+          # wrap files but not the subproject sources, so internal would try to
+          # fetch them at build time. nls, libmount, libelf, sysprof and xattr
+          # are all off because each one is another static library QEMU would
+          # have to be handed.
+          meson setup build --prefix="$STAGE" \
+            --cross-file "$RUNNER_TEMP/aarch64.txt" \
+            --default-library=static \
+            -Dtests=false -Dnls=disabled -Dlibmount=disabled -Dlibelf=disabled \
+            -Dsysprof=disabled -Doss_fuzz=disabled -Dgtk_doc=disabled -Dman=false \
+            -Dxattr=false -Dpcre2=external -Dlibffi=external -Diconv=auto
+          ninja -C build
+          ninja -C build install
+          ls -l "$STAGE/lib"/libglib-2.0.a "$STAGE/lib"/libgobject-2.0.a
+
+      - name: Build QEMU
+        run: |
+          set -euo pipefail
+          curl -sSLo qemu.tar.xz "https://download.qemu.org/qemu-$QEMU_VER.tar.xz"
+          tar xf qemu.tar.xz
+          cd "qemu-$QEMU_VER"
+
+          # --host-cc has to be named explicitly. Without it QEMU assumes the
+          # compiler it was given can also build the tools it runs during the
+          # build, and an aarch64 cross compiler cannot produce something the
+          # runner is able to execute.
+          ./configure \
+            --cross-prefix="${CROSS}" \
+            --host-cc=gcc \
+            --static \
+            --python=python3 \
+            --prefix=/usr \
+            --target-list=aarch64-softmmu \
+            --extra-ldflags="-static -static-libgcc" \
+            --extra-libs="-lpcre2-8 -lffi -lz -lm -lpthread -ldl -lrt -latomic" \
+            --disable-werror --disable-docs --disable-install-blobs \
+            --disable-kvm \
+            --audio-drv-list= \
+            --disable-gtk --disable-sdl --disable-curses --disable-vnc \
+            --disable-opengl --disable-virglrenderer --disable-spice \
+            --disable-usb-redir --disable-smartcard --disable-brlapi \
+            --disable-seccomp --disable-cap-ng --disable-attr \
+            --disable-numa --disable-tpm --disable-slirp --disable-vde \
+            --disable-netmap --disable-rdma --disable-glusterfs --disable-rbd \
+            --disable-libiscsi --disable-libnfs --disable-libssh --disable-blkio \
+            --disable-libpmem --disable-linux-io-uring --disable-virtfs \
+            --disable-selinux --disable-replication \
+            --disable-curl --disable-gnutls --disable-nettle \
+            --disable-lzo --disable-snappy --disable-bzip2 --disable-zstd \
+            --disable-vhost-crypto --disable-vhost-user --disable-vhost-scsi \
+            --disable-vhost-vdpa
+          make -j"$(nproc)"
+
+          echo "=== what came out ==="
+          file build/qemu-system-aarch64
+          aarch64-linux-gnu-readelf -d build/qemu-system-aarch64 | head -5 || true
+          ls -l build/qemu-system-aarch64 build/qemu-img
+
+      - name: Build busybox for the guest
+        run: |
+          set -euo pipefail
+          curl -sSLo bb.tar.bz2 "https://busybox.net/downloads/busybox-$BUSYBOX_VER.tar.bz2"
+          tar xjf bb.tar.bz2
+          cd "busybox-$BUSYBOX_VER"
+          make defconfig
+          # Same reason as the firmware-side ramdisk, and the same three applets
+          # are not in defconfig. The guest calls date, awk, grep and dd; all in
+          # defconfig already.
+          sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+          sed -i 's/^# CONFIG_INSTALL_APPLET is not set/CONFIG_INSTALL_APPLET=y/' .config
+          make CROSS_COMPILE="$CROSS" -j"$(nproc)"
+          file busybox
+
+      - name: Fetch a guest kernel
+        env:
+          K: ${{ runner.temp }}/guest/vmlinuz
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/guest"
+          curl -sSLo "$K" \
+            "https://dl-cdn.alpinelinux.org/alpine/$ALPINE/releases/aarch64/netboot/vmlinuz-virt"
+          ls -l "$K"
+
+          # QEMU's arm64 loader wants the ARM64 image header, the magic ARM\x64
+          # at 0x38, and while it can decompress a gzip stream itself the format
+          # Alpine ships is not knowable from here, so the file is checked and
+          # normalised to a plain Image rather than left for the first boot on
+          # the phone to discover. Shell because a heredoc cannot be written
+          # flush-left inside a YAML block scalar: content less indented than
+          # the first line ends the scalar.
+          sig=$(dd if="$K" bs=1 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')
+          if [ "$sig" = "1f8b" ]; then
+              echo "gzip stream: decompressing"
+              gunzip -c "$K" > "$K.raw"
+              mv "$K.raw" "$K"
+          fi
+          ls -l "$K"
+
+          magic=$(dd if="$K" bs=1 skip=56 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
+          echo "bytes at 0x38: $magic"
+          [ "$magic" = "41524d64" ] || { echo "FAIL: not an arm64 Image header"; exit 1; }
+          echo "arm64 Image ok"
+
+      - name: Assemble the guest initramfs
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/guestroot"
+          rm -rf "$ROOT"; mkdir -p "$ROOT/bin"
+          install -m 0755 "busybox-$BUSYBOX_VER/busybox" "$ROOT/bin/busybox"
+          ln -s busybox "$ROOT/bin/sh"
+          install -m 0755 linux-prep/guest-init "$ROOT/init"
+          python3 tools/mk_initramfs.py "$ROOT" -o "$RUNNER_TEMP/guest/initrd-smoke.cpio.gz"
+          gzip -t "$RUNNER_TEMP/guest/initrd-smoke.cpio.gz"
+          ls -l "$RUNNER_TEMP/guest"
+
+      - name: Prove the binaries actually run
+        run: |
+          set -euo pipefail
+          # A static arm64 ELF needs nothing but the syscall ABI, so qemu-user on
+          # the runner can execute it. This is the only check available before the
+          # phone, and it catches a bad link that --version would not show as a
+          # crash: missing shared libraries cannot be a missing shared library.
+          qemu-aarch64-static "qemu-$QEMU_VER/build/qemu-system-aarch64" --version
+          qemu-aarch64-static "qemu-$QEMU_VER/build/qemu-img" --version
+          qemu-aarch64-static "busybox-$BUSYBOX_VER/busybox" true
+          echo "all three execute as aarch64"
+
+          # No PT_DYNAMIC means no loader, no interpreter, nothing to be missing
+          # on the device.
+          for f in "qemu-$QEMU_VER/build/qemu-system-aarch64" "busybox-$BUSYBOX_VER/busybox"; do
+            if aarch64-linux-gnu-readelf -l "$f" | grep -q "INTERP"; then
+              echo "FAIL: $f is dynamically linked"; exit 1
+            fi
+          done
+          echo "no interpreter: both are static"
+
+      - name: Pack the bundle
+        run: |
+          set -euo pipefail
+          B="$RUNNER_TEMP/bundle"
+          rm -rf "$B"; mkdir -p "$B"/{bin,guest}
+          install -m 0755 "qemu-$QEMU_VER/build/qemu-system-aarch64" "$B/bin/"
+          install -m 0755 "qemu-$QEMU_VER/build/qemu-img"            "$B/bin/"
+          install -m 0755 "busybox-$BUSYBOX_VER/busybox"             "$B/bin/"
+          cp "$RUNNER_TEMP/guest/vmlinuz"                  "$B/guest/"
+          cp "$RUNNER_TEMP/guest/initrd-smoke.cpio.gz"     "$B/guest/"
+          install -m 0755 linux-prep/qemu-run.sh           "$B/run.sh"
+          mkdir -p dist/qemu
+          tar --owner=0 --group=0 --numeric-owner -czf dist/qemu/courbet-qemu.tar.gz -C "$B" .
+          ( cd dist/qemu && sha256sum courbet-qemu.tar.gz > SHA256SUMS && cat SHA256SUMS )
+          ls -l dist/qemu
+          du -h "$B"/bin/* "$B"/guest/*
+
+      - name: Publish
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f dist/qemu
+          git commit -m "Publish QEMU TCG bundle [skip ci]" || echo "unchanged"
+          # The firmware and ramdisk workflows push to the same branch and can
+          # land first, so rebase rather than assume this is the only writer.
+          git pull --rebase --autostash origin "${{ github.ref_name }}"
+          git push origin "HEAD:${{ github.ref_name }}"
+
+      - name: Upload as an artifact too
+        uses: actions/upload-artifact@v4
+        with:
+          name: courbet-qemu
+          path: dist/qemu/courbet-qemu.tar.gz
+          if-no-files-found: error
+
+      - name: What to do with it
+        run: |
+          echo 'On the phone, from a root shell in recovery:'
+          echo '  cd /data && mkdir -p qemu'
+          echo '  adb push dist/qemu/courbet-qemu.tar.gz /tmp/'
+          echo '  tar xzf /tmp/courbet-qemu.tar.gz -C /data/qemu'
+          echo '  sh /data/qemu/run.sh'

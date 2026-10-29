@@ -1,0 +1,64 @@
+#!/bin/sh
+# PID 1 inside the emulated guest, for the A1 smoke test.
+#
+# The point of this file is a measurement, not a desktop. Windows in a
+# software-emulated CPU is only worth starting if the emulation is fast enough to
+# tolerate, and the only way to know is to run something and time it. Everything
+# here exists to produce one number on the host's console.
+#
+# There is no root device. The whole guest lives in this initramfs, so a missing
+# module cannot stop the boot: virtio, ext4 and the serial console are what the
+# Alpine -virt kernel already has built in.
+#
+# busybox is mounted from the initramfs as /bin/busybox and called by path, the
+# same way linux-prep/init does, so no applet symlinks are needed.
+
+B=/bin/busybox
+
+$B mkdir -p /proc /sys /dev /tmp
+$B mount -t proc     proc  /proc
+$B mount -t sysfs    sysfs /sys
+$B mount -t devtmpfs devtmpfs /dev 2>/dev/null
+
+echo ""
+echo "########   GUEST ALIVE   ########"
+$B uname -a
+echo "cpus  : $($B cat /proc/cpuinfo | $B grep -c processor)"
+echo "mem   : $($B awk '/MemTotal/{print $2/1024 " MB"}' /proc/meminfo)"
+echo "cmdline: $($B cat /proc/cmdline)"
+echo ""
+
+# 64 MB of zeroes through sha256. Integer and SIMD work, no I/O, so the number
+# is about the translator rather than the disk. On a native aarch64 core this
+# runs at several hundred MB/s; under TCG expect a small fraction of that.
+MB=64
+echo "bench : sha256 of ${MB} MB"
+T0=$($B date +%s%N 2>/dev/null)
+$B dd if=/dev/zero bs=1048576 count=$MB 2>/dev/null | $B sha256sum > /tmp/hash.txt
+T1=$($B date +%s%N 2>/dev/null)
+if [ -n "$T0" ] && [ -n "$T1" ] && [ "$T1" -gt "$T0" ]; then
+    MS=$(( (T1 - T0) / 1000000 ))
+    echo "        ${MS} ms for ${MB} MB -> $(( MB * 1000 / (MS / 1000 + 1) )) KB/s"
+else
+    # No nanosecond clock: time it in whole seconds instead and say so, rather
+    # than printing a division by zero.
+    S0=$($B date +%s)
+    $B dd if=/dev/zero bs=1048576 count=$MB 2>/dev/null | $B sha256sum > /tmp/hash.txt
+    S1=$($B date +%s)
+    echo "        $(( S1 - S0 )) s wall (ns clock unavailable)"
+fi
+echo "        hash $($B cat /tmp/hash.txt)"
+echo ""
+
+# A guest that keeps running costs RAM the phone does not have spare. Ask the
+# kernel to power off; QEMU's virt machine implements PSCI SYSTEM_OFF, so this
+# is what ends the run.
+echo "RESULT: QEMU-SMOKE-OK"
+$B sync
+$B poweroff -f 2>/dev/null
+
+# If poweroff is refused, PID 1 exiting panics the kernel and that panic is
+# visible on the host console, which is still an answer.
+while true; do
+    $B sleep 60
+done
