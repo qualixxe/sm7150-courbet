@@ -63,3 +63,39 @@ and no events ever arrive afterwards. That is the same shape as the failure
 documented in `docs/TOUCH-SAGA.md` on sweet: the device object exists, the
 controller is never brought up, the interrupt line stays asserted and nothing
 is ever reported. It is a wiring problem, not a missing driver.
+## Emulation reaches the point where a measurement was worth taking
+
+The firmware route is blocked on a medium, not on a driver. The shipping
+firmware carries one filesystem driver, `Fat`, and every volume on this phone is
+ext4 or f2fs, so Windows has nothing it can read. Making a FAT volume means
+writing a partition table, and a partition table written wrongly on courbet
+means EDL 9008 with an unlock the vendor gates behind an authorized Mi account.
+That is not a risk to take for a convenience.
+
+The alternative is a second firmware, one that reads a file: QEMU's `virt`
+machine takes an image on userdata as a block device, and its own EDK2 build
+mounts FAT from it. userdata is mounted `rw` without `noexec`, so an executable
+can be dropped straight onto `/data`. Software emulation was measured rather
+assumed, and it turned out fast enough to be worth the detour:
+
+```
+guest   : Alpine 6.6.134-0-virt, 2 vcpu, 1911 MB
+host    : courbet, Kryo 475 under QEMU 8.2.2 TCG, thread=multi
+bench   : sha256 of 64 MB through a pipe, no I/O
+result  : 720 cs, 9102 KB/s
+```
+
+The same benchmark inside the same QEMU on a GitHub runner gives 21072 KB/s, so
+the phone is about 2.3x slower than a cloud core at translating arm64 to arm64.
+That is the number branch A was built to obtain, and it is the number that says
+whether a Windows guest is an experiment or an afternoon of waiting.
+
+KVM is not an option on this kernel and the measurement above says nothing about
+it: `CONFIG_VIRTUALIZATION` is unset in all three courbet kernels on the device,
+`/dev/kvm` does not exist, and the guest's own log closes the question with
+`kvm [1]: HYP mode not available`.
+
+What is still unproven, and is the next thing the `aavf-efi` workflow answers:
+whether a firmware built from this tree mounts a FAT ESP that lives inside a
+file, and whether it then loads `\EFI\BOOT\BOOTAA64.EFI` off it. Windows needs
+exactly those two facts, in that order.

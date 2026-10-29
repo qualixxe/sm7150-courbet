@@ -134,19 +134,26 @@ jobs:
 
       - name: Build AAVF
         run: |
-          set -euo pipefail
+          # "set -e" and deliberately not "-u": edksetup.sh expands EDK_TOOLS_PATH
+          # before testing it, and BaseTools/BuildEnv does the same for WORKSPACE,
+          # PACKAGES_PATH and CONF_PATH, so nounset stops the build before it
+          # starts. The first run of this workflow died exactly there.
+          set -eo pipefail
           cd edk2
           make -C BaseTools -j "$(nproc)" > "$RUNNER_TEMP/basetools.log" 2>&1 || {
               tail -40 "$RUNNER_TEMP/basetools.log"; exit 1; }
           echo "BaseTools built"
 
-          # edksetup.sh has to be sourced in the same shell as build: it exports
-          # WORKSPACE, EDK_TOOLS_PATH and PYTHONPATH, and puts Conf/ in place from
+          # Sourcing has to happen in the same shell as the build: it exports
+          # WORKSPACE, PYTHONPATH and EDK_TOOLS_PATH and fills Conf/ from
           # BaseTools/Conf/*.template. None of that survives a step boundary.
           export WORKSPACE="$PWD"
+          export EDK_TOOLS_PATH="$PWD/BaseTools"
           export PYTHON_COMMAND=python3
           export GCC5_AARCH64_PREFIX="$CROSS"
           source edksetup.sh
+          echo "workspace: $WORKSPACE"
+          echo "conf     : $(ls Conf | tr '\n' ' ')"
 
           build -a AARCH64 -t GCC5 -b "$EDK2_TARGET" \
                 -p ArmVirtPkg/ArmVirtQemu.dsc -n "$(nproc)"
