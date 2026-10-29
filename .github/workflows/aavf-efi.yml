@@ -1,0 +1,339 @@
+name: AAVF firmware bundle
+
+# Builds the UEFI firmware a QEMU guest needs, and the FAT disk that answers the
+# one question branch A still has open:
+#
+#   dist/aavf/courbet-aavf.tar.gz
+#     efi/AAVF_CODE.fd        EDK2 for QEMU's arm "virt" machine, built from the
+#     efi/AAVF_VARS.fd        same edk2 submodule the phone firmware builds from
+#     efi/Shell.efi           the UEFI shell, from the same build
+#     disks/fat-boot.img      GPT + one ESP (FAT32) holding \EFI\BOOT\BOOTAA64.EFI,
+#                             \startup.nsh and \hello.txt
+#     run.sh                  what to type on the phone
+#
+# Why this is the test that matters. Windows is read from a FAT volume with
+# \EFI\BOOT\BOOTAA64.EFI on it. The phone's own firmware does have a FAT driver
+# but has nothing to read FAT from - every volume on the device is ext4 or f2fs,
+# and making a FAT volume means rewriting the GPT, which is the edit that can
+# strand the device in EDL 9008 behind an authorized-account unlock. QEMU's
+# firmware is a second firmware that can read a FAT volume, because the volume
+# can be a file on userdata. So the question narrows to: does a firmware built
+# here mount a FAT ESP that lives in a file, and can it load a binary off it?
+#
+# Two attachments, not one. The disk is attached first as a PCI virtio block
+# device and then as a USB mass-storage device. Windows ships an inbox USB
+# mass-storage driver and no inbox virtio driver, so the USB run is the one the
+# installer could boot from unaided; the virtio run is the one that is fast
+# enough to install through once drivers are added. Both have to work for the
+# plan to have a fallback.
+#
+# The distro firmware is run against the same disk as a control before our own
+# build is tried. If the control passes and ours fails, the firmware is wrong;
+# if both fail the same way, the command line or the disk is wrong. Without it a
+# failure here would mean two possible culprits instead of one.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'linux-prep/uefi-run.sh'
+      - 'tools/boot_marker_check.sh'
+      - '.github/workflows/aavf-efi.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    name: AAVF plus a FAT disk
+    # 22.04 for the same reason as the other two workflows: the toolchain and
+    # qemu versions named in the comments below are the ones this image carries.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      CROSS: aarch64-linux-gnu-
+      EDK2_TARGET: DEBUG
+      # The arm virt machine's two flash banks are 2 MB each, and edk2 produces a
+      # QEMU_EFI.fd of exactly that size for anything but NOOPT. 768 KiB is the
+      # variable store the same FDF defines, and QEMU accepts a smaller image
+      # than the bank, so neither file needs padding.
+      MARKER: A1B-FS-OK
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain and the test emulator
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git python3 uuid-dev acpica-tools libssl-dev \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+            gdisk dosfstools mtools util-linux \
+            qemu-system-arm qemu-efi-aarch64
+          echo "=== versions ==="
+          aarch64-linux-gnu-gcc --version | head -1
+          python3 --version
+          qemu-system-aarch64 --version | head -1
+          echo "=== distro firmware, the control for the first boot test ==="
+          ls -l /usr/share/AAVMF/
+
+      - name: Fetch edk2 and the nested submodules it needs
+        run: |
+          set -euo pipefail
+          # The phone firmware and this firmware come from the same pinned edk2
+          # commit on purpose: one revision, one toolchain, and the same module
+          # set to reason about.
+          git submodule update --init --depth 1 edk2
+          echo "edk2 at $(git -C edk2 rev-parse --short HEAD)"
+
+          # Recursive would die on the dead repository fetch_submodules.sh
+          # documents, and UnitTestFrameworkPkg is not part of a firmware build.
+          git -C edk2 submodule init
+          mapfile -t paths < <(
+              git -C edk2 config --file .gitmodules --get-regexp \
+                  'submodule\..*\.path$' | awk '{print $2}' \
+                  | grep -v '^UnitTestFrameworkPkg/' || true
+          )
+          printf '  %s\n' "${paths[@]}"
+          git -C edk2 submodule update --jobs 4 "${paths[@]}"
+
+          for p in edk2/BaseTools/Source/C/BrotliCompress/brotli \
+                   edk2/CryptoPkg/Library/OpensslLib/openssl; do
+              [ -e "$p" ] || { echo "MISSING $p"; exit 1; }
+              echo "  ok      $p"
+          done
+
+      - name: Show what the platform actually contains
+        run: |
+          set -euo pipefail
+          cd edk2
+          # Every driver the two boot tests depend on, checked here rather than
+          # discovered as a missing device in the guest's log.
+          echo "=== ArmVirtQemu FVMAIN, the drivers the test needs ==="
+          # Reported, not asserted: a name that differs in this edk2 revision is
+          # information for whoever reads the log, and the boot tests below are
+          # the real verdict on whether the drivers are there and working.
+          for d in 'Fat\.inf' 'UdfDxe' 'PartitionDxe' 'DiskIoDxe' 'PciBusDxe' \
+                   'VirtioPciDeviceDxe' 'VirtioBlk\.inf' 'EhciDxe' 'XhciDxe' \
+                   'UsbBusDxe' 'UsbMassStorageDxe' 'Application/Shell'
+          do
+              if line=$(grep -n "$d" ArmVirtPkg/ArmVirtQemuFvMain.fdf.inc | head -1); then
+                  echo "  present  $line"
+              else
+                  echo "  ABSENT   $d"
+              fi
+          done
+          echo "=== flash sizes ==="
+          grep -n -E "FD_SIZE_IN_MB|FD_SIZE +=" ArmVirtPkg/ArmVirt.dsc.inc | head -6
+          grep -n -E "^\[FD\.|Size +=" ArmVirtPkg/VarStore.fdf.inc | head -4
+
+      - name: Build AAVF
+        run: |
+          set -euo pipefail
+          cd edk2
+          make -C BaseTools -j "$(nproc)" > "$RUNNER_TEMP/basetools.log" 2>&1 || {
+              tail -40 "$RUNNER_TEMP/basetools.log"; exit 1; }
+          echo "BaseTools built"
+
+          # edksetup.sh has to be sourced in the same shell as build: it exports
+          # WORKSPACE, EDK_TOOLS_PATH and PYTHONPATH, and puts Conf/ in place from
+          # BaseTools/Conf/*.template. None of that survives a step boundary.
+          export WORKSPACE="$PWD"
+          export PYTHON_COMMAND=python3
+          export GCC5_AARCH64_PREFIX="$CROSS"
+          source edksetup.sh
+
+          build -a AARCH64 -t GCC5 -b "$EDK2_TARGET" \
+                -p ArmVirtPkg/ArmVirtQemu.dsc -n "$(nproc)"
+
+          FV="Build/ArmVirtQemu-AARCH64/${EDK2_TARGET}_GCC5/FV"
+          ls -l "$FV"
+          echo "=== the shell application the build produced ==="
+          find Build -name 'Shell.efi' -printf '%p %s bytes\n'
+
+      - name: Stage the firmware and the shell
+        run: |
+          set -euo pipefail
+          S="$RUNNER_TEMP/stage"
+          FV="edk2/Build/ArmVirtQemu-AARCH64/${EDK2_TARGET}_GCC5/FV"
+          rm -rf "$S"; mkdir -p "$S/efi"
+          install -m 0644 "$FV/QEMU_EFI.fd"  "$S/efi/AAVF_CODE.fd"
+          install -m 0644 "$FV/QEMU_VARS.fd" "$S/efi/AAVF_VARS.fd"
+          SHELL_EFI=$(find edk2/Build -name 'Shell.efi' | head -1)
+          [ -n "$SHELL_EFI" ] || { echo "FAIL: no Shell.efi in the build"; exit 1; }
+          install -m 0644 "$SHELL_EFI" "$S/efi/Shell.efi"
+          ls -l "$S/efi"
+          file "$S/efi/AAVF_CODE.fd" "$S/efi/Shell.efi"
+
+      - name: Build the FAT disk
+        run: |
+          set -euo pipefail
+          S="$RUNNER_TEMP/stage"
+          mkdir -p "$S/disks" "$RUNNER_TEMP/esp"
+          IMG="$S/disks/fat-boot.img"
+          dd if=/dev/zero of="$IMG" bs=1M count=64 status=none
+
+          # A partition table, not a bare filesystem: what the firmware mounts is
+          # a partition discovered by PartitionDxe, which is the same code path a
+          # real USB stick takes. An image with only FAT would test less than the
+          # phone needs.
+          #
+          # Written to a file rather than a heredoc: inside a YAML block every
+          # line is indented, and bash will not accept an indented end-of-heredoc
+          # marker with spaces, so the whole rest of the step would become input.
+          printf 'label: gpt\nfirst-lba: 2048\n2048,+,C12A7328-F81F-11D2-BA4B-00A0C93EC9B9\n' \
+            > "$RUNNER_TEMP/esp/sfdisk.script"
+          sfdisk --quiet "$IMG" < "$RUNNER_TEMP/esp/sfdisk.script"
+
+          # mtools addresses a byte range of a file with @offset, so the ESP is
+          # filled without a loop device and therefore without root.
+          OFF=$(sfdisk --json "$IMG" | python3 -c \
+              'import json,sys; print(json.load(sys.stdin)["partitiontable"]["partitions"][0]["start"] * 512)')
+          echo "ESP starts at byte $OFF"
+          mformat -v EFIBOOT -i "$IMG@@$OFF" ::
+          mmd -i "$IMG@@$OFF" ::/EFI ::/EFI/BOOT
+
+          # Two markers, in two places, so a silent failure has a name.
+          #
+          # A1B-BEGIN is echoed by the shell, so seeing it means BOOTAA64.EFI was
+          # loaded off this disk and the script was found next to it.
+          #
+          # A1B-FS-OK is not echoed - it is the content of hello.txt, printed by
+          # "type". It can therefore only appear if the firmware read a file from
+          # the FAT volume, which is the thing branch A actually depends on. An
+          # echo would have proved the script ran and nothing else.
+          #
+          # reset ends the run instead of leaving QEMU attached to a shell prompt
+          # until the timeout; -no-reboot turns it into an emulator exit.
+          printf 'echo A1B-BEGIN\r\nversion\r\nmap -r\r\nls\r\n' >  "$RUNNER_TEMP/esp/startup.nsh"
+          printf 'type hello.txt\r\n'                              >> "$RUNNER_TEMP/esp/startup.nsh"
+          printf 'echo A1B-END\r\nreset\r\n'                       >> "$RUNNER_TEMP/esp/startup.nsh"
+          printf '%s read from fat-boot.img over qemu\r\n' "$MARKER" \
+            > "$RUNNER_TEMP/esp/hello.txt"
+
+          mcopy -i "$IMG@@$OFF" "$RUNNER_TEMP/esp/startup.nsh" ::/startup.nsh
+          mcopy -i "$IMG@@$OFF" "$RUNNER_TEMP/esp/hello.txt"   ::/hello.txt
+          mcopy -i "$IMG@@$OFF" "$S/efi/Shell.efi" ::/EFI/BOOT/BOOTAA64.EFI
+
+          echo "=== image ==="
+          sfdisk -d "$IMG"
+          mdir -i "$IMG@@$OFF" -s ::/
+          mdir -i "$IMG@@$OFF" -s ::/EFI/BOOT
+          ls -l "$IMG"
+
+      - name: Boot test, distro firmware as the control
+        run: |
+          # Deliberately not fatal: this step is a comparison, and the run is
+          # still worth reading when only one of the three firmware images boots.
+          #
+          # "set +e" is load-bearing, not a style choice: the runner wraps every
+          # run: block in "bash -e", and a timeout or a guest reset is a non-zero
+          # exit that would otherwise kill the step before the transcript prints.
+          set -uo pipefail
+          set +e
+          S="$RUNNER_TEMP/stage"
+          LOG="$RUNNER_TEMP/control.log"
+          cp /usr/share/AAVMF/AAVMF_VARS.fd "$RUNNER_TEMP/control-vars.fd"
+          timeout 420 qemu-system-aarch64 \
+            -machine virt -cpu max -accel tcg \
+            -nic none -smp 2 -m 2048 \
+            -drive if=pflash,format=raw,readonly=on,file=/usr/share/AAVMF/AAVMF_CODE.fd \
+            -drive if=pflash,format=raw,file="$RUNNER_TEMP/control-vars.fd" \
+            -drive if=none,id=esp,format=raw,file="$S/disks/fat-boot.img" \
+            -device virtio-blk-pci,drive=esp \
+            -nographic -no-reboot > "$LOG" 2>&1
+          echo "emulator exit: $?"
+          sh tools/boot_marker_check.sh "control (distro AAVF, virtio)" "$MARKER" "$LOG" 45 \
+            || echo "::warning::the distro firmware did not reach the marker"
+
+      - name: Boot test, our firmware over virtio
+        run: |
+          set -uo pipefail
+          set +e
+          S="$RUNNER_TEMP/stage"
+          LOG="$RUNNER_TEMP/virtio.log"
+          cp "$S/efi/AAVF_VARS.fd" "$RUNNER_TEMP/virtio-vars.fd"
+          timeout 420 qemu-system-aarch64 \
+            -machine virt -cpu max -accel tcg \
+            -nic none -smp 2 -m 2048 \
+            -drive if=pflash,format=raw,readonly=on,file="$S/efi/AAVF_CODE.fd" \
+            -drive if=pflash,format=raw,file="$RUNNER_TEMP/virtio-vars.fd" \
+            -drive if=none,id=esp,format=raw,file="$S/disks/fat-boot.img" \
+            -device virtio-blk-pci,drive=esp \
+            -nographic -no-reboot > "$LOG" 2>&1
+          echo "emulator exit: $?"
+          sh tools/boot_marker_check.sh "ours (AAVF from this build, virtio)" "$MARKER" "$LOG" 45 \
+            || echo "::warning::our firmware did not reach the marker over virtio"
+
+      - name: Boot test, our firmware over USB mass storage
+        run: |
+          set -uo pipefail
+          set +e
+          S="$RUNNER_TEMP/stage"
+          LOG="$RUNNER_TEMP/usb.log"
+          cp "$S/efi/AAVF_VARS.fd" "$RUNNER_TEMP/usb-vars.fd"
+          # nec-1527 is a PCI EHCI host controller; the virt machine has no USB of
+          # its own, so the controller is part of what is being tested here.
+          timeout 420 qemu-system-aarch64 \
+            -machine virt -cpu max -accel tcg \
+            -nic none -smp 2 -m 2048 \
+            -drive if=pflash,format=raw,readonly=on,file="$S/efi/AAVF_CODE.fd" \
+            -drive if=pflash,format=raw,file="$RUNNER_TEMP/usb-vars.fd" \
+            -device nec-1527 \
+            -drive if=none,id=usb,format=raw,file="$S/disks/fat-boot.img" \
+            -device usb-storage,drive=usb \
+            -nographic -no-reboot > "$LOG" 2>&1
+          echo "emulator exit: $?"
+          sh tools/boot_marker_check.sh "ours (AAVF from this build, usb-storage)" "$MARKER" "$LOG" 45 \
+            || echo "::warning::our firmware did not reach the marker over USB"
+
+      - name: Keep the transcripts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aavf-boot-logs
+          path: ${{ runner.temp }}/*.log
+          if-no-files-found: warn
+
+      - name: Pack the bundle
+        run: |
+          set -euo pipefail
+          B="$RUNNER_TEMP/stage"
+          install -m 0755 linux-prep/uefi-run.sh "$B/run.sh"
+          mkdir -p dist/aavf
+          tar --owner=0 --group=0 --numeric-owner -czf dist/aavf/courbet-aavf.tar.gz -C "$B" .
+          ( cd dist/aavf && sha256sum courbet-aavf.tar.gz > SHA256SUMS && cat SHA256SUMS )
+          ls -l dist/aavf
+          tar tzf dist/aavf/courbet-aavf.tar.gz
+
+      - name: Publish
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f dist/aavf
+          git commit -m "Publish AAVF bundle [skip ci]" || echo "unchanged"
+          # Three workflows write to dist/ on the same branch, so rebase instead
+          # of assuming this is the only writer.
+          git pull --rebase --autostash origin "${{ github.ref_name }}"
+          git push origin "HEAD:${{ github.ref_name }}"
+
+      - name: Upload as an artifact too
+        uses: actions/upload-artifact@v4
+        with:
+          name: courbet-aavf
+          path: dist/aavf/courbet-aavf.tar.gz
+          if-no-files-found: error
+
+      - name: What to do with it
+        run: |
+          echo 'On the phone, from a root shell in recovery, after the qemu bundle'
+          echo 'is already unpacked at /data/qemu:'
+          echo '  adb push dist/aavf/courbet-aavf.tar.gz /tmp/'
+          echo '  mkdir -p /data/aavf && tar xzf /tmp/courbet-aavf.tar.gz -C /data/aavf'
+          echo '  sh /data/aavf/run.sh          # virtio'
+          echo '  BUS=usb sh /data/aavf/run.sh  # usb mass storage'
