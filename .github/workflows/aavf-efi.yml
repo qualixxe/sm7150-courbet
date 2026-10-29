@@ -238,9 +238,9 @@ jobs:
           printf '%s read from fat-boot.img over qemu\r\n' "$MARKER" \
             > "$RUNNER_TEMP/esp/hello.txt"
 
-          mcopy -i "$IMG@@$OFF" "$RUNNER_TEMP/esp/startup.nsh" ::/startup.nsh
-          mcopy -i "$IMG@@$OFF" "$RUNNER_TEMP/esp/hello.txt"   ::/hello.txt
-          mcopy -i "$IMG@@$OFF" "$S/efi/Shell.efi" ::/EFI/BOOT/BOOTAA64.EFI
+          mcopy -o -i "$IMG@@$OFF" "$RUNNER_TEMP/esp/startup.nsh" ::/startup.nsh
+          mcopy -o -i "$IMG@@$OFF" "$RUNNER_TEMP/esp/hello.txt"   ::/hello.txt
+          mcopy -o -i "$IMG@@$OFF" "$S/efi/Shell.efi" ::/EFI/BOOT/BOOTAA64.EFI
 
           echo "=== image ==="
           sfdisk -d "$IMG"
@@ -303,8 +303,8 @@ jobs:
           # Both files go in before the script is rewritten: startup.nsh is what
           # makes the firmware load them, and a disk that boots with a kernel
           # missing from it would fail somewhere nobody expects.
-          mcopy -i "$S/disks/fat-boot.img@@$OFF" "$G/Image" ::/Image
-          mcopy -i "$S/disks/fat-boot.img@@$OFF" "$G/initrd-smoke.cpio.gz" ::/initrd-smoke.cpio.gz
+          mcopy -o -i "$S/disks/fat-boot.img@@$OFF" "$G/Image" ::/Image
+          mcopy -o -i "$S/disks/fat-boot.img@@$OFF" "$G/initrd-smoke.cpio.gz" ::/initrd-smoke.cpio.gz
 
           # The kernel line goes last: the guest ends by asking for a power off,
           # which ends QEMU, so anything after it would never run. The "reset"
@@ -312,7 +312,23 @@ jobs:
           head -n -1 "$RUNNER_TEMP/esp/startup.nsh" > "$RUNNER_TEMP/esp/startup.nsh.kernel"
           printf 'fs0:\\Image initrd=initrd-smoke.cpio.gz rdinit=/init console=ttyAMA0\r\n' \
             >> "$RUNNER_TEMP/esp/startup.nsh.kernel"
-          mcopy -i "$S/disks/fat-boot.img@@$OFF" "$RUNNER_TEMP/esp/startup.nsh.kernel" ::/startup.nsh
+
+          # This is the one copy that replaces a file the previous step already
+          # put on the disk, and the first two runs of this step died here: exit
+          # 1, 1.7 ms, and not one line written to either stream. That is mcopy's
+          # default answer to an existing target - it asks, and with nothing
+          # attached to stdin the question has no answer, so it gives up without
+          # saying so. -o says overwrite instead of asking, everywhere, so the
+          # next file that is already there cannot produce the same silence.
+          rc=0
+          mcopy -o -i "$S/disks/fat-boot.img@@$OFF" "$RUNNER_TEMP/esp/startup.nsh.kernel" \
+                ::/startup.nsh || rc=$?
+          if [ "$rc" -ne 0 ]; then
+              echo "FAIL: mcopy of startup.nsh returned $rc"
+              ls -l "$RUNNER_TEMP/esp/startup.nsh.kernel"
+              mdir -i "$S/disks/fat-boot.img@@$OFF" -s ::/
+              exit 1
+          fi
           set +x
           echo "=== startup.nsh on the disk ==="
           mtype -i "$S/disks/fat-boot.img@@$OFF" ::startup.nsh
