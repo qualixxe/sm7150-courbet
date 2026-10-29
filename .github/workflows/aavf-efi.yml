@@ -186,7 +186,11 @@ jobs:
           S="$RUNNER_TEMP/stage"
           mkdir -p "$S/disks" "$RUNNER_TEMP/esp"
           IMG="$S/disks/fat-boot.img"
-          dd if=/dev/zero of="$IMG" bs=1M count=64 status=none
+          # 128 MB, not 64: the ESP has to hold a 34 MB kernel, an initrd and the
+          # shell at the same time, and a filesystem that is 90 % full is a second
+          # way to fail the test for a reason that has nothing to do with the
+          # firmware. The image is a file on a runner disk with 60 GB free.
+          dd if=/dev/zero of="$IMG" bs=1M count=128 status=none
 
           # A partition table, not a bare filesystem: what the firmware mounts is
           # a partition discovered by PartitionDxe, which is the same code path a
@@ -205,6 +209,9 @@ jobs:
           OFF=$(sfdisk --json "$IMG" | python3 -c \
               'import json,sys; print(json.load(sys.stdin)["partitiontable"]["partitions"][0]["start"] * 512)')
           echo "ESP starts at byte $OFF"
+          # Saved for the next step, which fills the same ESP with a kernel: one
+          # number, computed once, so the two steps cannot disagree.
+          printf '%s\n' "$OFF" > "$RUNNER_TEMP/esp/offset"
           mformat -v EFIBOOT -i "$IMG@@$OFF" ::
           mmd -i "$IMG@@$OFF" ::/EFI ::/EFI/BOOT
 
@@ -282,8 +289,20 @@ jobs:
           gzip -t "$G/initrd-smoke.cpio.gz"
           ls -l "$G"
 
-          OFF=$(sfdisk --json "$S/disks/fat-boot.img" | python3 -c \
-              'import json,sys; print(json.load(sys.stdin)["partitiontable"]["partitions"][0]["start"] * 512)')
+          # Traced from here to the end of the step. The first run of this step
+          # died between "ls -l" and the next echo without writing a single line
+          # to stderr, which makes "which command" the whole question and -x
+          # answers it. The busybox build above is not traced because its output
+          # is already redirected away and its command lines are enormous.
+          set -x
+          # The offset is written by the step that partitioned the image, so the
+          # two steps cannot disagree about where the ESP starts.
+          OFF=$(cat "$RUNNER_TEMP/esp/offset")
+          echo "ESP at byte $OFF"
+
+          # Both files go in before the script is rewritten: startup.nsh is what
+          # makes the firmware load them, and a disk that boots with a kernel
+          # missing from it would fail somewhere nobody expects.
           mcopy -i "$S/disks/fat-boot.img@@$OFF" "$G/Image" ::/Image
           mcopy -i "$S/disks/fat-boot.img@@$OFF" "$G/initrd-smoke.cpio.gz" ::/initrd-smoke.cpio.gz
 
@@ -294,8 +313,11 @@ jobs:
           printf 'fs0:\\Image initrd=initrd-smoke.cpio.gz rdinit=/init console=ttyAMA0\r\n' \
             >> "$RUNNER_TEMP/esp/startup.nsh.kernel"
           mcopy -i "$S/disks/fat-boot.img@@$OFF" "$RUNNER_TEMP/esp/startup.nsh.kernel" ::/startup.nsh
+          set +x
           echo "=== startup.nsh on the disk ==="
           mtype -i "$S/disks/fat-boot.img@@$OFF" ::startup.nsh
+          echo "=== the ESP after the kernel ==="
+          mdir -i "$S/disks/fat-boot.img@@$OFF" -s ::/
 
       - name: Boot test, distro firmware as the control
         run: |
