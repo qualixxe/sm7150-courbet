@@ -144,7 +144,13 @@ jobs:
       - name: Build zlib
         run: |
           set -euo pipefail
-          curl -sSLo z.tar.gz "https://zlib.net/fossils/zlib-$ZLIB_VER.tar.gz"
+          # Same tarball as zlib.net, which is where this came from until a run
+          # got an HTML page back from it and tar died with "not in gzip format"
+          # half a second in. --fail now turns that into an immediate curl error,
+          # and the GitHub release is the mirror least likely to answer 200 with
+          # something that is not an archive.
+          curl -sfSL --retry 3 --retry-all-errors -o z.tar.gz \
+            "https://github.com/madler/zlib/releases/download/v$ZLIB_VER/zlib-$ZLIB_VER.tar.gz"
           tar xzf z.tar.gz
           cd "zlib-$ZLIB_VER"
           CC="${CROSS}gcc" ./configure --prefix="$STAGE" --static
@@ -155,7 +161,7 @@ jobs:
       - name: Build libffi
         run: |
           set -euo pipefail
-          curl -sSLo ffi.tar.gz \
+          curl -sfSL --retry 3 --retry-all-errors -o ffi.tar.gz \
             "https://github.com/libffi/libffi/releases/download/v$LIBFFI_VER/libffi-$LIBFFI_VER.tar.gz"
           tar xzf ffi.tar.gz
           cd "libffi-$LIBFFI_VER"
@@ -169,7 +175,7 @@ jobs:
       - name: Build pcre2
         run: |
           set -euo pipefail
-          curl -sSLo pcre2.tar.gz \
+          curl -sfSL --retry 3 --retry-all-errors -o pcre2.tar.gz \
             "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-$PCRE2_VER/pcre2-$PCRE2_VER.tar.gz"
           tar xzf pcre2.tar.gz
           cd "pcre2-$PCRE2_VER"
@@ -184,7 +190,7 @@ jobs:
       - name: Build pixman
         run: |
           set -euo pipefail
-          curl -sSLo px.tar.xz \
+          curl -sfSL --retry 3 --retry-all-errors -o px.tar.xz \
             "https://xorg.freedesktop.org/releases/individual/lib/pixman-$PIXMAN_VER.tar.xz"
           tar xf px.tar.xz
           cd "pixman-$PIXMAN_VER"
@@ -205,7 +211,7 @@ jobs:
       - name: Build glib
         run: |
           set -euo pipefail
-          curl -sSLo glib.tar.xz \
+          curl -sfSL --retry 3 --retry-all-errors -o glib.tar.xz \
             "https://download.gnome.org/sources/glib/${GLIB_VER%.*}/glib-$GLIB_VER.tar.xz"
           tar xf glib.tar.xz
           cd "glib-$GLIB_VER"
@@ -273,7 +279,7 @@ jobs:
       - name: Build QEMU
         run: |
           set -euo pipefail
-          curl -sSLo qemu.tar.xz "https://download.qemu.org/qemu-$QEMU_VER.tar.xz"
+          curl -sfSL --retry 3 --retry-all-errors -o qemu.tar.xz "https://download.qemu.org/qemu-$QEMU_VER.tar.xz"
           tar xf qemu.tar.xz
           cd "qemu-$QEMU_VER"
 
@@ -341,7 +347,7 @@ jobs:
       - name: Build busybox for the guest
         run: |
           set -euo pipefail
-          curl -sSLo bb.tar.bz2 "https://busybox.net/downloads/busybox-$BUSYBOX_VER.tar.bz2"
+          curl -sfSL --retry 3 --retry-all-errors -o bb.tar.bz2 "https://busybox.net/downloads/busybox-$BUSYBOX_VER.tar.bz2"
           tar xjf bb.tar.bz2
           cd "busybox-$BUSYBOX_VER"
           make defconfig
@@ -359,7 +365,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/guest"
-          curl -sSLo "$K" \
+          curl -sfSL --retry 3 --retry-all-errors -o "$K" \
             "https://dl-cdn.alpinelinux.org/alpine/$ALPINE/releases/aarch64/netboot/vmlinuz-virt"
           ls -l "$K"
 
