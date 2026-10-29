@@ -31,21 +31,22 @@ echo ""
 # 64 MB of zeroes through sha256. Integer and SIMD work, no I/O, so the number
 # is about the translator rather than the disk. On a native aarch64 core this
 # runs at several hundred MB/s; under TCG expect a small fraction of that.
+#
+# The clock is /proc/uptime, in hundredths of a second, and not date +%s%N:
+# %N is not in the strftime that busybox date calls, so on a glibc busybox it
+# can come back as a literal "N" and the arithmetic below would be comparing a
+# number to a letter. The kernel's uptime is always there and, for a run that
+# takes seconds, 10 ms of resolution is not the limiting factor.
 MB=64
 echo "bench : sha256 of ${MB} MB"
-T0=$($B date +%s%N 2>/dev/null)
+T0=$($B awk '{print int($1 * 100)}' /proc/uptime)
 $B dd if=/dev/zero bs=1048576 count=$MB 2>/dev/null | $B sha256sum > /tmp/hash.txt
-T1=$($B date +%s%N 2>/dev/null)
-if [ -n "$T0" ] && [ -n "$T1" ] && [ "$T1" -gt "$T0" ]; then
-    MS=$(( (T1 - T0) / 1000000 ))
-    echo "        ${MS} ms for ${MB} MB -> $(( MB * 1000 / (MS / 1000 + 1) )) KB/s"
+T1=$($B awk '{print int($1 * 100)}' /proc/uptime)
+CS=$((T1 - T0))
+if [ "$CS" -gt 0 ]; then
+    echo "        ${CS} cs for ${MB} MB -> $(( MB * 1024 * 100 / CS )) KB/s"
 else
-    # No nanosecond clock: time it in whole seconds instead and say so, rather
-    # than printing a division by zero.
-    S0=$($B date +%s)
-    $B dd if=/dev/zero bs=1048576 count=$MB 2>/dev/null | $B sha256sum > /tmp/hash.txt
-    S1=$($B date +%s)
-    echo "        $(( S1 - S0 )) s wall (ns clock unavailable)"
+    echo "        faster than the clock could measure (${CS} cs)"
 fi
 echo "        hash $($B cat /tmp/hash.txt)"
 echo ""

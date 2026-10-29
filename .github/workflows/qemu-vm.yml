@@ -264,16 +264,21 @@ jobs:
           done
 
           # The probe is a real link of a real main(), against the same
-          # archives QEMU is about to use. Anything missing shows up here as
-          # an undefined reference, with the symbol name, rather than as a
-          # failure somewhere inside 4000 translation units.
+          # archives QEMU is about to use, in the same mode QEMU is about to be
+          # linked in. Anything missing shows up here as an undefined reference,
+          # with the symbol name, rather than as a failure somewhere inside 4000
+          # translation units. It cannot catch the GOT overflow below - that one
+          # depends on how many relocations the binary has - but linking without
+          # -static here would not even have tried the same code path.
           printf '#include <glib.h>\n#include <gio/gio.h>\nint main(int argc,char**argv){return g_strv_length(argv)==argc;}\n' \
             > "$RUNNER_TEMP/linkprobe.c"
-          aarch64-linux-gnu-gcc -o "$RUNNER_TEMP/linkprobe" "$RUNNER_TEMP/linkprobe.c" \
+          aarch64-linux-gnu-gcc -static -no-pie -o "$RUNNER_TEMP/linkprobe" \
+            "$RUNNER_TEMP/linkprobe.c" \
             $(pkg-config --static --cflags glib-2.0 gio-2.0 pixman-1) \
             $(pkg-config --static --libs glib-2.0 gobject-2.0 gio-2.0 pixman-1) \
             -static-libgcc -L"$STAGE/lib"
           aarch64-linux-gnu-readelf -h "$RUNNER_TEMP/linkprobe" | grep -E "Machine|Type"
+          echo "probe INTERP entries: $(aarch64-linux-gnu-readelf -l "$RUNNER_TEMP/linkprobe" | grep -c INTERP || true)"
           echo "static link of glib+gio+pixman for aarch64: ok"
 
       - name: Build QEMU
@@ -321,8 +326,22 @@ jobs:
           # (Without a path in front of them the same list was worse than
           # useless: meson's find_library probes link with these very flags, so
           # an unresolvable -lpcre2-8 is how "Library m found: NO" got in.)
-          base=(--cross-prefix="$CROSS" --host-cc=gcc --static --python=python3
-                --prefix=/usr --target-list=aarch64-softmmu
+          # --disable-pie is not cosmetic. With --static and PIE left on, QEMU's
+          # own probe compiles a three-line main() with -static-pie, that fits,
+          # and meson.build then puts -static-pie on the real link too - where it
+          # dies at the last of 2929 targets:
+          #
+          #   libc.a(abort.o): relocation truncated to fit:
+          #     R_AARCH64_LD64_GOTPAGE_LO15 against symbol '__stack_chk_guard'
+          #   too many GOT entries for -fpic, please recompile with -fPIC
+          #
+          # A static-pie binary resolves everything through the GOT, the GOT on
+          # aarch64 is 16-bit-offset-limited, and the aarch64 glibc static archive
+          # in this sysroot is not compiled with -fPIC, so QEMU's few thousand
+          # relocations simply do not fit. Saying --disable-pie makes meson use
+          # plain -static instead, and also adds -fno-pie -no-pie to every compile.
+          base=(--cross-prefix="$CROSS" --host-cc=gcc --static --disable-pie
+                --python=python3 --prefix=/usr --target-list=aarch64-softmmu
                 --extra-ldflags="-L$STAGE/lib -static-libgcc")
 
           # What configure does accept stays in the log, so the next version
