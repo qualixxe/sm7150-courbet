@@ -112,7 +112,7 @@ jobs:
           ar = '${CROSS}ar'
           strip = '${CROSS}strip'
           nm = '${CROSS}nm'
-          pkgconfig = 'pkg-config'
+          pkg-config = 'pkg-config'
 
           [host_machine]
           system = 'linux'
@@ -174,10 +174,16 @@ jobs:
             "https://xorg.freedesktop.org/releases/individual/lib/pixman-$PIXMAN_VER.tar.xz"
           tar xf px.tar.xz
           cd "pixman-$PIXMAN_VER"
+
+          # cpu= was added after this version, and a value of the wrong type is
+          # rejected just as hard as an unknown name, so both are corrected
+          # against pixman's own declaration rather than against a guess.
+          OPTS=$(python3 "$GITHUB_WORKSPACE/tools/meson_opts.py" . \
+                   tests=disabled libpng=disabled cpu=base)
+          echo "asking for: $OPTS"
           meson setup build --prefix="$STAGE" \
             --cross-file "$RUNNER_TEMP/aarch64.txt" \
-            --default-library=static -Dtests=disabled -Dlibpng=disabled \
-            -Dcpu=base
+            --default-library=static $OPTS
           ninja -C build
           ninja -C build install
           ls -l "$STAGE/lib"/libpixman-1.a
@@ -192,15 +198,22 @@ jobs:
 
           # pcre2 and libffi have to be external: the release tarball carries
           # wrap files but not the subproject sources, so internal would try to
-          # fetch them at build time. nls, libmount, libelf, sysprof and xattr
-          # are all off because each one is another static library QEMU would
-          # have to be handed.
+          # fetch them at build time. nls, libmount, libelf, sysprof, xattr and
+          # the documentation are off because each one is either another static
+          # library QEMU would have to be handed or another host tool.
+          #
+          # The list goes through the same filter as pixman's: glib has renamed
+          # and retyped options across point releases, and setup fails on the
+          # first one it does not recognise.
+          OPTS=$(python3 "$GITHUB_WORKSPACE/tools/meson_opts.py" . \
+                   tests=disabled nls=disabled libmount=disabled \
+                   libelf=disabled sysprof=disabled oss_fuzz=disabled \
+                   gtk_doc=disabled man=disabled xattr=disabled \
+                   pcre2=external libffi=external iconv=auto)
+          echo "asking for: $OPTS"
           meson setup build --prefix="$STAGE" \
             --cross-file "$RUNNER_TEMP/aarch64.txt" \
-            --default-library=static \
-            -Dtests=false -Dnls=disabled -Dlibmount=disabled -Dlibelf=disabled \
-            -Dsysprof=disabled -Doss_fuzz=disabled -Dgtk_doc=disabled -Dman=false \
-            -Dxattr=false -Dpcre2=external -Dlibffi=external -Diconv=auto
+            --default-library=static $OPTS
           ninja -C build
           ninja -C build install
           ls -l "$STAGE/lib"/libglib-2.0.a "$STAGE/lib"/libgobject-2.0.a
@@ -216,31 +229,48 @@ jobs:
           # compiler it was given can also build the tools it runs during the
           # build, and an aarch64 cross compiler cannot produce something the
           # runner is able to execute.
-          ./configure \
-            --cross-prefix="${CROSS}" \
-            --host-cc=gcc \
-            --static \
-            --python=python3 \
-            --prefix=/usr \
-            --target-list=aarch64-softmmu \
-            --extra-ldflags="-static -static-libgcc" \
-            --extra-libs="-lpcre2-8 -lffi -lz -lm -lpthread -ldl -lrt -latomic" \
-            --disable-werror --disable-docs --disable-install-blobs \
-            --disable-kvm \
-            --audio-drv-list= \
-            --disable-gtk --disable-sdl --disable-curses --disable-vnc \
-            --disable-opengl --disable-virglrenderer --disable-spice \
-            --disable-usb-redir --disable-smartcard --disable-brlapi \
-            --disable-seccomp --disable-cap-ng --disable-attr \
-            --disable-numa --disable-tpm --disable-slirp --disable-vde \
-            --disable-netmap --disable-rdma --disable-glusterfs --disable-rbd \
-            --disable-libiscsi --disable-libnfs --disable-libssh --disable-blkio \
-            --disable-libpmem --disable-linux-io-uring --disable-virtfs \
-            --disable-selinux --disable-replication \
-            --disable-curl --disable-gnutls --disable-nettle \
-            --disable-lzo --disable-snappy --disable-bzip2 --disable-zstd \
-            --disable-vhost-crypto --disable-vhost-user --disable-vhost-scsi \
-            --disable-vhost-vdpa
+          # Arrays rather than strings: --extra-ldflags and --extra-libs each
+          # carry several space-separated values, and a string expanded without
+          # quoting would hand configure them as separate arguments.
+          base=(--cross-prefix="$CROSS" --host-cc=gcc --static --python=python3
+                --prefix=/usr --target-list=aarch64-softmmu
+                --extra-ldflags="-static -static-libgcc"
+                --extra-libs="-lpcre2-8 -lffi -lz -lm -lpthread -ldl -lrt -latomic")
+
+          # Which optional driver still has a --disable- flag moves between
+          # releases, and configure stops on the first name it does not know.
+          # The script itself is the only reliable list, so the wanted flags are
+          # checked against it and the ones that are gone are dropped in public.
+          wanted="
+            disable-werror disable-docs disable-install-blobs disable-kvm
+            disable-gtk disable-sdl disable-curses disable-vnc disable-opengl
+            disable-virglrenderer disable-spice disable-usb-redir
+            disable-smartcard disable-brlapi disable-seccomp disable-cap-ng
+            disable-attr disable-numa disable-tpm disable-slirp disable-vde
+            disable-netmap disable-rdma disable-glusterfs disable-rbd
+            disable-libiscsi disable-libnfs disable-libssh disable-blkio
+            disable-libpmem disable-linux-io-uring disable-virtfs
+            disable-selinux disable-replication disable-curl disable-gnutls
+            disable-nettle disable-lzo disable-snappy disable-bzip2
+            disable-zstd disable-vhost-crypto disable-vhost-user
+            disable-vhost-scsi disable-vhost-vdpa disable-xen
+          "
+          flags=()
+          for o in $wanted; do
+            if grep -q -- "--$o)" configure || grep -q -- "--$o=" configure; then
+              flags+=(--$o)
+            else
+              echo "configure does not know --$o, dropped"
+            fi
+          done
+
+          # Audio is the one group that is not a --disable- flag per driver.
+          if grep -q -- "--audio-drv-list=" configure; then
+            flags+=(--audio-drv-list=)
+          fi
+
+          echo "configuring with: ${base[*]} ${flags[*]}"
+          ./configure "${base[@]}" "${flags[@]}"
           make -j"$(nproc)"
 
           echo "=== what came out ==="
