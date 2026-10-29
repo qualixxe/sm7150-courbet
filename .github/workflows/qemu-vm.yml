@@ -441,8 +441,16 @@ jobs:
           QT=$(command -v qemu-system-aarch64)
           echo "test emulator: $($QT --version 2>&1 | head -1)"
           LOG="$RUNNER_TEMP/boot.log"
+          # The flag set is run.sh's, minus thread=multi which is about the phone's
+          # cores and thermals: -nic none included, because the first version of
+          # this step got "qemu-system-aarch64: failed to find romfile
+          # efi-virtio.rom" and exit 1 with an empty console. With no -net given,
+          # QEMU creates its default NIC anyway, and that device wants an EFI
+          # option ROM from the emulator's datadir - which the phone has no more
+          # of than the runner does. Discovering that here cost one CI run; on the
+          # device it would have cost the session.
           timeout 900 "$QT" \
-            -machine virt -cpu max -accel tcg -smp 2 -m 1024 \
+            -machine virt -cpu max -accel tcg -nic none -smp 2 -m 1024 \
             -kernel "$RUNNER_TEMP/guest/vmlinuz" \
             -initrd "$RUNNER_TEMP/guest/initrd-smoke.cpio.gz" \
             -append "console=ttyAMA0 rdinit=/init" \

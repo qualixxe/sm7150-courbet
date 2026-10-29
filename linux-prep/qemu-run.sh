@@ -75,10 +75,17 @@ echo "battery : ${CAP}%"
 echo "starting (Ctrl-C stops it)"
 echo ""
 
+# -nic none is not a tuning, it is what makes the machine start at all. With no
+# -net option given, QEMU still creates its default NIC, and that device carries
+# an EFI option ROM - efi-virtio.rom - which it looks for under its own
+# datadir. The bundle has no datadir on this device, so the default NIC is a
+# fatal "failed to find romfile" before the guest begins. Proven in CI, where
+# the same command without -nic none died exactly that way.
 "$Q" \
     -machine virt \
     -cpu max \
     -accel tcg,thread=multi \
+    -nic none \
     -smp "$SMP" \
     -m "$MEM_MB" \
     -kernel "$IMAGE" \
