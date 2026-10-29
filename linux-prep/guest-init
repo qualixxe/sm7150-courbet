@@ -19,6 +19,12 @@ $B mkdir -p /proc /sys /dev /tmp
 $B mount -t proc     proc  /proc
 $B mount -t sysfs    sysfs /sys
 $B mount -t devtmpfs devtmpfs /dev 2>/dev/null
+# PID 1 writes its report to the console the kernel opened for it, and that node
+# comes from devtmpfs. If the mount is refused, /dev is an empty directory from
+# the initramfs, every echo below goes nowhere and the run looks like a hang
+# rather than like a guest that is actually alive - so the one node that matters
+# is made by hand.
+[ -c /dev/console ] || $B mknod /dev/console c 5 1
 
 echo ""
 echo "########   GUEST ALIVE   ########"
