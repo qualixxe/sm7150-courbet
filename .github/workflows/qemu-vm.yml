@@ -76,7 +76,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
-            pkg-config python3-pip python3-setuptools python3-wheel \
+            pkg-config pkg-config-aarch64-linux-gnu \
+            python3-pip python3-setuptools python3-wheel \
             autoconf libtool gettext texinfo \
             curl ca-certificates xz-utils bzip2 cpio unzip \
             flex bison perl ninja-build \
@@ -237,13 +238,21 @@ jobs:
           # Nothing is disabled by name. The --disable-gtk family and
           # --extra-libs are gone from this configure, having moved to meson
           # feature options -- the previous attempt in this file learned that the
-          # hard way -- and this is a cross build whose only visible packages
-          # are $STAGE and the aarch64 sysroot, because PKG_CONFIG_LIBDIR was
-          # narrowed to exactly those. So gtk, sdl, vnc, numa, curl and gnutls
-          # are simply not found.
+          # hard way -- and a cross build does not find them regardless:
+          # --cross-prefix makes QEMU write a meson cross file whose pkg-config
+          # is aarch64-linux-gnu-pkg-config, so only the aarch64 sysroot and
+          # $STAGE are searched, and gtk, sdl, vnc, numa and curl are not in
+          # either. That is why the tool wrapper is installed above; without it
+          # the glib lookup dies with "Pkg-config for machine host not found".
+          #
+          # The libraries are handed over in --extra-ldflags with -L$STAGE/lib in
+          # front of them. Listing the libraries without the path was the second
+          # failure: meson runs its find_library probes with these same flags, so
+          # an unresolvable -lpcre2-8 makes the probe report libm as missing and
+          # the build goes wrong somewhere else entirely.
           base=(--cross-prefix="$CROSS" --host-cc=gcc --static --python=python3
                 --prefix=/usr --target-list=aarch64-softmmu
-                --extra-ldflags="-static -static-libgcc -lpcre2-8 -lffi -lz -lm -lpthread -ldl -lrt -latomic")
+                --extra-ldflags="-L$STAGE/lib -static -static-libgcc -lpcre2-8 -lffi -lz -lm -lpthread -ldl -lrt -latomic")
 
           # What configure does accept stays in the log, so the next version
           # bump has something to check against instead of a guess.
