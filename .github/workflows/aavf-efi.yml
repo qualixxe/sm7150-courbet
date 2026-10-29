@@ -37,7 +37,6 @@ on:
     branches: [main]
     paths:
       - 'linux-prep/uefi-run.sh'
-      - 'tools/boot_marker_check.sh'
       - '.github/workflows/aavf-efi.yml'
   workflow_dispatch:
 
@@ -57,6 +56,10 @@ jobs:
     env:
       CROSS: aarch64-linux-gnu-
       EDK2_TARGET: DEBUG
+      # Same guest the qemu bundle boots directly, so the two tests differ in one
+      # thing only: this one reaches the kernel through the firmware.
+      ALPINE: v3.20
+      BUSYBOX_VER: 1.36.1
       # The arm virt machine's two flash banks are 2 MB each, and edk2 produces a
       # QEMU_EFI.fd of exactly that size for anything but NOOPT. 768 KiB is the
       # variable store the same FDF defines, and QEMU accepts a smaller image
@@ -217,9 +220,14 @@ jobs:
           #
           # reset ends the run instead of leaving QEMU attached to a shell prompt
           # until the timeout; -no-reboot turns it into an emulator exit.
-          printf 'echo A1B-BEGIN\r\nversion\r\nmap -r\r\nls\r\n' >  "$RUNNER_TEMP/esp/startup.nsh"
-          printf 'type hello.txt\r\n'                              >> "$RUNNER_TEMP/esp/startup.nsh"
-          printf 'echo A1B-END\r\nreset\r\n'                       >> "$RUNNER_TEMP/esp/startup.nsh"
+          # Paths are anchored on fs0: because the shell starts a startup.nsh
+          # without a current directory: the first run of this workflow got as far
+          # as a mounted FS0 and then failed on bare "ls" and "type hello.txt"
+          # with "Current directory not specified". "version" is gone for the same
+          # kind of reason - the distro shell build does not carry it.
+          printf 'echo A1B-BEGIN\r\nmap -r\r\nls fs0:\r\n'  > "$RUNNER_TEMP/esp/startup.nsh"
+          printf 'type fs0:hello.txt\r\n'                   >> "$RUNNER_TEMP/esp/startup.nsh"
+          printf 'echo A1B-END\r\nreset\r\n'                >> "$RUNNER_TEMP/esp/startup.nsh"
           printf '%s read from fat-boot.img over qemu\r\n' "$MARKER" \
             > "$RUNNER_TEMP/esp/hello.txt"
 
@@ -233,29 +241,83 @@ jobs:
           mdir -i "$IMG@@$OFF" -s ::/EFI/BOOT
           ls -l "$IMG"
 
+      - name: Add a UEFI-bootable Linux to the same disk
+        run: |
+          set -euo pipefail
+          S="$RUNNER_TEMP/stage"
+          G="$RUNNER_TEMP/guest"
+          mkdir -p "$G"
+
+          # Alpine ships its aarch64 kernel as an EFI zboot image, which is a
+          # PE/COFF application the firmware loads the same way it loads
+          # BOOTAA64.EFI. So this is the handoff Windows uses - firmware reads an
+          # EFI binary off a FAT ESP - with a guest that has a serial console to
+          # talk back on.
+          #
+          # The file is named Image, not BOOTAA64.EFI, on purpose: this run boots
+          # the shell from the ESP default path, and the shell then starts the
+          # kernel. Two loads, in the order a Windows install actually happens.
+          curl -sfSL --retry 3 --retry-all-errors -o "$G/Image" \
+            "https://dl-cdn.alpinelinux.org/alpine/$ALPINE/releases/aarch64/netboot/vmlinuz-virt"
+          python3 tools/zboot_unpack.py "$G/Image" -o "$G/Image"
+          ls -l "$G/Image"
+
+          # The same RAM-only guest the qemu bundle ships, built the same way.
+          B="$RUNNER_TEMP/busybox"
+          curl -sfSL --retry 3 --retry-all-errors -o "$B.tar.bz2" \
+            "https://www.busybox.net/downloads/busybox-$BUSYBOX_VER.tar.bz2"
+          tar xjf "$B.tar.bz2"
+          make -C "busybox-$BUSYBOX_VER" CROSS_COMPILE="$CROSS" \
+               ARCH=arm64 defconfig > /dev/null
+          sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' \
+              "busybox-$BUSYBOX_VER/.config"
+          make -C "busybox-$BUSYBOX_VER" CROSS_COMPILE="$CROSS" ARCH=arm64 -j "$(nproc)" > /dev/null
+
+          R="$RUNNER_TEMP/guestroot"
+          rm -rf "$R"; mkdir -p "$R/bin"
+          install -m 0755 "busybox-$BUSYBOX_VER/busybox" "$R/bin/busybox"
+          ln -s busybox "$R/bin/sh"
+          install -m 0755 linux-prep/guest-init "$R/init"
+          python3 tools/mk_initramfs.py "$R" -o "$G/initrd-smoke.cpio.gz"
+          gzip -t "$G/initrd-smoke.cpio.gz"
+          ls -l "$G"
+
+          OFF=$(sfdisk --json "$S/disks/fat-boot.img" | python3 -c \
+              'import json,sys; print(json.load(sys.stdin)["partitiontable"]["partitions"][0]["start"] * 512)')
+          mcopy -i "$S/disks/fat-boot.img@@$OFF" "$G/Image" ::/Image
+          mcopy -i "$S/disks/fat-boot.img@@$OFF" "$G/initrd-smoke.cpio.gz" ::/initrd-smoke.cpio.gz
+
+          # The kernel line goes last: the guest ends by asking for a power off,
+          # which ends QEMU, so anything after it would never run. The "reset"
+          # line from the FAT-only script is dropped for the same reason.
+          head -n -1 "$RUNNER_TEMP/esp/startup.nsh" > "$RUNNER_TEMP/esp/startup.nsh.kernel"
+          printf 'fs0:\\Image initrd=initrd-smoke.cpio.gz rdinit=/init console=ttyAMA0\r\n' \
+            >> "$RUNNER_TEMP/esp/startup.nsh.kernel"
+          mcopy -i "$S/disks/fat-boot.img@@$OFF" "$RUNNER_TEMP/esp/startup.nsh.kernel" ::/startup.nsh
+          echo "=== startup.nsh on the disk ==="
+          mtype -i "$S/disks/fat-boot.img@@$OFF" ::startup.nsh
+
       - name: Boot test, distro firmware as the control
         run: |
           # Deliberately not fatal: this step is a comparison, and the run is
           # still worth reading when only one of the three firmware images boots.
           #
           # "set +e" is load-bearing, not a style choice: the runner wraps every
-          # run: block in "bash -e", and a timeout or a guest reset is a non-zero
-          # exit that would otherwise kill the step before the transcript prints.
+          # run: block in "bash -e", and a failing test is a non-zero exit that
+          # would otherwise kill the step before the transcript prints. The
+          # Verdict step below is what turns these three results into a table.
           set -uo pipefail
           set +e
-          S="$RUNNER_TEMP/stage"
-          LOG="$RUNNER_TEMP/control.log"
-          cp /usr/share/AAVMF/AAVMF_VARS.fd "$RUNNER_TEMP/control-vars.fd"
-          timeout 420 qemu-system-aarch64 \
-            -machine virt -cpu max -accel tcg \
-            -nic none -smp 2 -m 2048 \
-            -drive if=pflash,format=raw,readonly=on,file=/usr/share/AAVMF/AAVMF_CODE.fd \
-            -drive if=pflash,format=raw,file="$RUNNER_TEMP/control-vars.fd" \
-            -drive if=none,id=esp,format=raw,file="$S/disks/fat-boot.img" \
-            -device virtio-blk-pci,drive=esp \
-            -nographic -no-reboot > "$LOG" 2>&1
-          echo "emulator exit: $?"
-          sh tools/boot_marker_check.sh "control (distro AAVF, virtio)" "$MARKER" "$LOG" 45 \
+          # The three tests run the very script that ships to the phone, with
+          # QEMU and the flash files pointed at this runner's copies. A command
+          # line that only works in one of the two places proves nothing about
+          # the other, so there is one implementation of it rather than two.
+          LOG="$RUNNER_TEMP/control.log" \
+          QEMU=qemu-system-aarch64 \
+          CODE=/usr/share/AAVMF/AAVMF_CODE.fd VARS=/usr/share/AAVMF/AAVMF_VARS.fd \
+          DISK="$RUNNER_TEMP/stage/disks/fat-boot.img" \
+            sh linux-prep/uefi-run.sh
+          grep -q "$MARKER" "$RUNNER_TEMP/control.log" \
             || echo "::warning::the distro firmware did not reach the marker"
 
       - name: Boot test, our firmware over virtio
@@ -263,18 +325,11 @@ jobs:
           set -uo pipefail
           set +e
           S="$RUNNER_TEMP/stage"
-          LOG="$RUNNER_TEMP/virtio.log"
-          cp "$S/efi/AAVF_VARS.fd" "$RUNNER_TEMP/virtio-vars.fd"
-          timeout 420 qemu-system-aarch64 \
-            -machine virt -cpu max -accel tcg \
-            -nic none -smp 2 -m 2048 \
-            -drive if=pflash,format=raw,readonly=on,file="$S/efi/AAVF_CODE.fd" \
-            -drive if=pflash,format=raw,file="$RUNNER_TEMP/virtio-vars.fd" \
-            -drive if=none,id=esp,format=raw,file="$S/disks/fat-boot.img" \
-            -device virtio-blk-pci,drive=esp \
-            -nographic -no-reboot > "$LOG" 2>&1
-          echo "emulator exit: $?"
-          sh tools/boot_marker_check.sh "ours (AAVF from this build, virtio)" "$MARKER" "$LOG" 45 \
+          LOG="$RUNNER_TEMP/virtio.log" QEMU=qemu-system-aarch64 \
+          CODE="$S/efi/AAVF_CODE.fd" VARS="$S/efi/AAVF_VARS.fd" \
+          DISK="$S/disks/fat-boot.img" \
+            sh linux-prep/uefi-run.sh
+          grep -q "$MARKER" "$RUNNER_TEMP/virtio.log" \
             || echo "::warning::our firmware did not reach the marker over virtio"
 
       - name: Boot test, our firmware over USB mass storage
@@ -282,22 +337,45 @@ jobs:
           set -uo pipefail
           set +e
           S="$RUNNER_TEMP/stage"
-          LOG="$RUNNER_TEMP/usb.log"
-          cp "$S/efi/AAVF_VARS.fd" "$RUNNER_TEMP/usb-vars.fd"
-          # nec-1527 is a PCI EHCI host controller; the virt machine has no USB of
-          # its own, so the controller is part of what is being tested here.
-          timeout 420 qemu-system-aarch64 \
-            -machine virt -cpu max -accel tcg \
-            -nic none -smp 2 -m 2048 \
-            -drive if=pflash,format=raw,readonly=on,file="$S/efi/AAVF_CODE.fd" \
-            -drive if=pflash,format=raw,file="$RUNNER_TEMP/usb-vars.fd" \
-            -device nec-1527 \
-            -drive if=none,id=usb,format=raw,file="$S/disks/fat-boot.img" \
-            -device usb-storage,drive=usb \
-            -nographic -no-reboot > "$LOG" 2>&1
-          echo "emulator exit: $?"
-          sh tools/boot_marker_check.sh "ours (AAVF from this build, usb-storage)" "$MARKER" "$LOG" 45 \
+          LOG="$RUNNER_TEMP/usb.log" QEMU=qemu-system-aarch64 BUS=usb \
+          CODE="$S/efi/AAVF_CODE.fd" VARS="$S/efi/AAVF_VARS.fd" \
+          DISK="$S/disks/fat-boot.img" \
+            sh linux-prep/uefi-run.sh
+          grep -q "$MARKER" "$RUNNER_TEMP/usb.log" \
             || echo "::warning::our firmware did not reach the marker over USB"
+
+      - name: Verdict
+        run: |
+          set -uo pipefail
+          # Both markers per firmware, in one table, because the two questions are
+          # independent and a single column hides which one failed.
+          #
+          # A1B-FS-OK is the content of a file on the FAT volume: it can only
+          # appear if the firmware mounted the ESP and read it.
+          #
+          # QEMU-SMOKE-OK is printed by the guest's own init: it can only appear
+          # if the firmware loaded an EFI binary off that volume and handed control
+          # to it, which is the handoff Windows needs.
+          echo '| firmware | FAT read | EFI handoff |'                | tee "$RUNNER_TEMP/verdict.md"
+          echo '| --- | --- | --- |'                                   | tee -a "$RUNNER_TEMP/verdict.md"
+          for pair in "distro AAVF:control" "ours, virtio:virtio" "ours, usb-storage:usb"; do
+              label=${pair%%:*}; key=${pair##*:}
+              log="$RUNNER_TEMP/$key.log"
+              fat=no; handoff=no
+              if [ -f "$log" ]; then
+                  grep -q "$MARKER" "$log"        && fat=yes
+                  grep -q "QEMU-SMOKE-OK" "$log"  && handoff=yes
+              fi
+              echo "| $label | $fat | $handoff |"                      | tee -a "$RUNNER_TEMP/verdict.md"
+          done
+          echo ""
+          echo "What each column would be used for next:"
+          echo "  FAT read     - a Windows disk image on userdata is readable by a firmware"
+          echo "  EFI handoff  - the firmware can start \\EFI\\BOOT\\BOOTAA64.EFI from it"
+          if [ ! -f "$RUNNER_TEMP/stage/efi/AAVF_CODE.fd" ]; then
+              echo "::error::there is no firmware from this build to test"
+              exit 1
+          fi
 
       - name: Keep the transcripts
         uses: actions/upload-artifact@v4
