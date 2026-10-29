@@ -76,12 +76,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
-            pkg-config pkg-config-aarch64-linux-gnu \
+            pkg-config \
             python3-pip python3-setuptools python3-wheel \
             autoconf libtool gettext texinfo \
             curl ca-certificates xz-utils bzip2 cpio unzip \
             flex bison perl ninja-build \
             qemu-user-static
+
+          # A cross build asks for <triplet>-pkg-config, and QEMU names
+          # aarch64-linux-gnu-pkg-config because it was given --cross-prefix.
+          # 22.04 has no package by that name - the run before this one tried to
+          # apt-get it and got "Unable to locate package" - and the wrapper is
+          # two lines anyway: everything it would need to derive from the
+          # triplet is already set explicitly in PKG_CONFIG_LIBDIR below.
+          if ! command -v aarch64-linux-gnu-pkg-config >/dev/null 2>&1; then
+              printf '#!/bin/sh\nexec /usr/bin/pkg-config "$@"\n' |
+                sudo tee /usr/bin/aarch64-linux-gnu-pkg-config >/dev/null
+              sudo chmod 0755 /usr/bin/aarch64-linux-gnu-pkg-config
+          fi
+          echo "cross pkg-config: $(aarch64-linux-gnu-pkg-config --version)"
           python3 -m pip install --user "meson==1.5.1"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           aarch64-linux-gnu-gcc --version | head -1
@@ -219,6 +232,44 @@ jobs:
           ninja -C build install
           ls -l "$STAGE/lib"/libglib-2.0.a "$STAGE/lib"/libgobject-2.0.a
 
+      - name: Close the static link lines
+        run: |
+          set -euo pipefail
+          # A .pc written for a static build keeps what it privately needs in
+          # Libs.private, and only pkg-config --static expands that. QEMU asks
+          # meson for static dependencies, so normally it does get expanded, but
+          # whether a link line is complete is a two-second question here and a
+          # six-minute question if it is only discovered while linking QEMU.
+          # So the private requirements are folded into the plain Libs line and
+          # the result is linked here, before QEMU is configured at all.
+          cd "$STAGE/lib/pkgconfig"
+          ls
+          for pc in *.pc; do
+            priv=$(sed -n 's/^Libs\.private:[[:space:]]*//p' "$pc" | tr -d '\n')
+            [ -n "$priv" ] || continue
+            echo "$pc: Libs.private =$priv"
+            sed -i "s|^Libs: .*|& $priv|" "$pc"
+          done
+
+          echo "=== what a static link now asks for ==="
+          for pkg in glib-2.0 gobject-2.0 gio-2.0 pixman-1; do
+            printf '%s:' "$pkg"
+            pkg-config --static --libs "$pkg" || echo " NOT FOUND"
+          done
+
+          # The probe is a real link of a real main(), against the same
+          # archives QEMU is about to use. Anything missing shows up here as
+          # an undefined reference, with the symbol name, rather than as a
+          # failure somewhere inside 4000 translation units.
+          printf '#include <glib.h>\n#include <gio/gio.h>\nint main(int argc,char**argv){return g_strv_length(argv)==argc;}\n' \
+            > "$RUNNER_TEMP/linkprobe.c"
+          aarch64-linux-gnu-gcc -o "$RUNNER_TEMP/linkprobe" "$RUNNER_TEMP/linkprobe.c" \
+            $(pkg-config --static --cflags glib-2.0 gio-2.0 pixman-1) \
+            $(pkg-config --static --libs glib-2.0 gobject-2.0 gio-2.0 pixman-1) \
+            -static-libgcc -L"$STAGE/lib"
+          aarch64-linux-gnu-readelf -h "$RUNNER_TEMP/linkprobe" | grep -E "Machine|Type"
+          echo "static link of glib+gio+pixman for aarch64: ok"
+
       - name: Build QEMU
         run: |
           set -euo pipefail
@@ -242,17 +293,31 @@ jobs:
           # --cross-prefix makes QEMU write a meson cross file whose pkg-config
           # is aarch64-linux-gnu-pkg-config, so only the aarch64 sysroot and
           # $STAGE are searched, and gtk, sdl, vnc, numa and curl are not in
-          # either. That is why the tool wrapper is installed above; without it
-          # the glib lookup dies with "Pkg-config for machine host not found".
+          # either. The wrapper has to exist for the query to happen at all:
+          # without it the glib lookup fails with "Pkg-config for machine host
+          # machine not found", which is a missing tool, not a missing library.
           #
-          # The libraries are handed over in --extra-ldflags with -L$STAGE/lib in
-          # front of them. Listing the libraries without the path was the second
-          # failure: meson runs its find_library probes with these same flags, so
-          # an unresolvable -lpcre2-8 makes the probe report libm as missing and
-          # the build goes wrong somewhere else entirely.
+          # What is left in --extra-ldflags is only the search path and
+          # -static-libgcc. Two things that used to be here are not:
+          #
+          # "-static": QEMU's --static turns into -Dprefer_static=true, and its
+          # meson.build then appends -static-pie or -static itself, having first
+          # probed whether the toolchain can do static-pie. Saying it twice puts
+          # -static next to -static-pie and buys nothing.
+          #
+          # the "-lpcre2-8 -lffi -lz" list: configure copies --extra-ldflags
+          # verbatim into the cross file it generates, as c_link_args, and meson
+          # puts those in front of the libraries rather than behind them. An
+          # archive only contributes objects for symbols undefined at the point
+          # it appears on the command line, so a -lpcre2-8 ahead of
+          # libglib-2.0.a resolves nothing. The transitive libraries have to come
+          # from pkg-config, and the step before this one proves that they do.
+          # (Without a path in front of them the same list was worse than
+          # useless: meson's find_library probes link with these very flags, so
+          # an unresolvable -lpcre2-8 is how "Library m found: NO" got in.)
           base=(--cross-prefix="$CROSS" --host-cc=gcc --static --python=python3
                 --prefix=/usr --target-list=aarch64-softmmu
-                --extra-ldflags="-L$STAGE/lib -static -static-libgcc -lpcre2-8 -lffi -lz -lm -lpthread -ldl -lrt -latomic")
+                --extra-ldflags="-L$STAGE/lib -static-libgcc")
 
           # What configure does accept stays in the log, so the next version
           # bump has something to check against instead of a guess.
