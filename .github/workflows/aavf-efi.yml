@@ -379,8 +379,17 @@ jobs:
           CODE="$S/efi/AAVF_CODE.fd" VARS="$S/efi/AAVF_VARS.fd" \
           DISK="$S/disks/fat-boot.img" \
             sh linux-prep/uefi-run.sh
-          grep -q "$MARKER" "$RUNNER_TEMP/usb.log" \
-            || echo "::warning::our firmware did not reach the marker over USB"
+          rc=$?
+          if [ "$rc" -eq 3 ]; then
+              # Not a failure of the firmware: this emulator binary simply has no
+              # PCI USB host controller in it, so there is nothing to attach the
+              # disk to. Recorded as skipped, and the phone, whose QEMU is a
+              # different build, is where this path actually gets tested.
+              : > "$RUNNER_TEMP/usb.skipped"
+              echo "::warning::no PCI USB host controller in the runner's emulator; USB test skipped"
+          elif ! grep -q "$MARKER" "$RUNNER_TEMP/usb.log"; then
+              echo "::warning::our firmware did not reach the marker over USB"
+          fi
 
       - name: Verdict
         run: |
@@ -400,7 +409,9 @@ jobs:
               label=${pair%%:*}; key=${pair##*:}
               log="$RUNNER_TEMP/$key.log"
               fat=no; handoff=no
-              if [ -f "$log" ]; then
+              if [ -f "$RUNNER_TEMP/$key.skipped" ]; then
+                  fat="n/a"; handoff="n/a"
+              elif [ -f "$log" ]; then
                   grep -q "$MARKER" "$log"        && fat=yes
                   grep -q "QEMU-SMOKE-OK" "$log"  && handoff=yes
               fi

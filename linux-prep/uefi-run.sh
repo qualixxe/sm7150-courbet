@@ -97,12 +97,30 @@ case "$BUS" in
                 -device virtio-blk-pci,drive=esp"
         ;;
     usb)
-        # nec-1527 is a PCI EHCI host controller: the virt machine has no USB of
-        # its own, so the controller is part of what is being tested.
+        # The virt machine has no USB of its own, so the host controller is part
+        # of what this tests. Which controller exists is a property of the
+        # emulator binary, not of the machine: the runner's qemu-system-arm 6.2
+        # has no nec-1527 at all and quits with "not a valid device model name",
+        # while the 8.2 build on the phone does. So the first name this binary
+        # actually registers is the one used, xhci first because it is the one
+        # Windows and a modern EDK2 both handle best.
+        CTRL=""
+        for c in qemu-xhci nec-1527 piix3-usb-uhci; do
+            if "$Q" -device help 2>/dev/null | grep -q "name \"$c\""; then
+                CTRL=$c; break
+            fi
+        done
+        if [ -z "$CTRL" ]; then
+            echo "SKIP: this emulator registers no PCI USB host controller,"
+            echo "      so the USB mass-storage path cannot be tested with it."
+            echo "      Try: $Q -device help | grep -i usb"
+            exit 3
+        fi
         # shellcheck disable=SC2086
-        ATTACH="-device nec-1527
+        ATTACH="-device $CTRL
                 -drive if=none,id=usb,format=raw,file=$DISK
                 -device usb-storage,drive=usb"
+        echo "usb ctrl: $CTRL"
         ;;
     *)
         echo "FAIL: BUS must be virtio or usb, not $BUS"

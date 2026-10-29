@@ -99,3 +99,45 @@ What is still unproven, and is the next thing the `aavf-efi` workflow answers:
 whether a firmware built from this tree mounts a FAT ESP that lives inside a
 file, and whether it then loads `\EFI\BOOT\BOOTAA64.EFI` off it. Windows needs
 exactly those two facts, in that order.
+
+## Both questions the last section left open are answered, and the answer is yes
+
+Run 5 of the `aavf-efi` workflow booted the same FAT disk under three
+firmwares. What it printed:
+
+| firmware            | FAT read | EFI handoff |
+| ---                 | ---      | ---         |
+| distro AAVF         | yes      | yes         |
+| ours, virtio        | yes      | yes         |
+| ours, usb-storage   | n/a      | n/a         |
+
+"FAT read" is the content of `hello.txt`, printed by the UEFI shell after it was
+already running: it can only appear if the firmware found the GPT partition,
+mounted the FAT32 volume inside an ordinary file and read a directory entry.
+"EFI handoff" is `QEMU-SMOKE-OK`, printed by `/init` inside a Linux that the
+firmware loaded as `\EFI\BOOT\BOOTAA64.EFI` and started with the shell's own
+command line. The two are separate columns because they are separate facts, and
+the second one is the fact Windows depends on: setup is an EFI binary on a FAT
+volume, started by a firmware.
+
+So a Windows disk image stored as a file on userdata is readable by a firmware
+built from this tree, and bootable from, on this hardware. The medium stays a
+file on `/data`, which is the part that does not touch the GPT and therefore
+cannot reach EDL.
+
+The USB row is n/a rather than no: the runner's `qemu-system-arm` is 6.2 and its
+binary registers no `nec-1527`, so it exits with "not a valid device model name"
+before the firmware runs. That says something about the package, not about
+EDK2's `UsbMassStorageDxe`, and the phone's own QEMU is 8.2, built here, where
+the controller does exist. The script now asks the emulator which PCI USB host
+controller it has instead of assuming one, and reports n/a when it has none.
+
+Two details that were only knowable by running it:
+
+- The FAT volume needs room. A 64 MB image holds the shell, a 34 MB zboot
+  kernel, an initrd and the scripts at about 90 % full; the image is 128 MB now
+  so that a filesystem failure cannot be mistaken for a firmware failure.
+- `mcopy` without `-o` does not overwrite an existing file, it asks. With
+  nothing attached to stdin the question has no answer, and mtools exits 1 in
+  1.7 ms having written nothing to either stream - which is how run 3 and run 4
+  failed with no error message at all.
