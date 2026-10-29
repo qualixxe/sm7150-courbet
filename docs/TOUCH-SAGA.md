@@ -2,6 +2,13 @@
 
 > Doc de referência pra não nos perdermos. Atualizar conforme avança.
 > Última atualização: 2026-06-18
+>
+> **courbet (Mi 11 Lite 4G):** este documento é da saga do **sweet**. No courbet o
+> touch NÃO fica no I2C7: fica no QUP **SPI SE4** (0x890000, CS0, 8 MHz), com
+> reset GPIO8, INT GPIO9, iovdd GPIO72 e avdd GPIO21 — o DSDT deste fork já foi
+> corrigido para isso. Fontes e diff completo: `COURBET.md`, seção "The DSDT is
+> courbet's now". O que continua valendo daqui para baixo: o PMIC (LDO11_C) e a
+> história do voto RPMh.
 
 ## 🎯 Objetivo
 Fazer o **touch (Goodix GDGT9889 / gt9896)** funcionar no Windows 11 ARM64 no

@@ -69400,14 +69400,15 @@ DefinitionBlock ("", "DSDT", 2, "QCOMM ", "SDM8180 ", 0x00000003)
             }
         }
 
-        Device (I2C5)
+        Device (SPI5)
         {
-            Name (_HID, "QCOM0411")  // _HID: Hardware ID  [qci2c OFF: I2C5 sem clock, evita hang]
+            Name (_HID, "QCOM040F")  // _HID: Hardware ID  [QUP v3 SPI SE4 - courbet: o touch (xiaomi-spits) mora aqui, nao no I2C7 do sweet]
             Alias (PSUB, _SUB)
             Name (_UID, 0x05)  // _UID: Unique ID
-            Name (_DEP, Package (0x01)  // _DEP: Dependencies
+            Name (_DEP, Package (0x02)  // _DEP: Dependencies
             {
-                PEP0
+                PEP0,
+                QGP0
             })
             Name (_CCA, Zero)  // _CCA: Cache Coherency Attribute
             Method (_CRS, 0, NotSerialized)  // _CRS: Current Resource Settings
@@ -69415,7 +69416,7 @@ DefinitionBlock ("", "DSDT", 2, "QCOMM ", "SDM8180 ", 0x00000003)
                 Name (RBUF, ResourceTemplate ()
                 {
                     Memory32Fixed (ReadWrite,
-                        0x00890000,         // Address Base
+                        0x00890000,         // Address Base (GENI SE4 = qupv3_se4_spi no DT vendor)
                         0x00004000,         // Address Length
                         )
                     Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive, ,, )
@@ -69423,7 +69424,7 @@ DefinitionBlock ("", "DSDT", 2, "QCOMM ", "SDM8180 ", 0x00000003)
                         0x0000027D,
                     }
                 })
-                Return (RBUF) /* \_SB_.I2C5._CRS.RBUF */
+                Return (RBUF) /* \_SB_.SPI5._CRS.RBUF */
             }
         }
 
@@ -69538,33 +69539,30 @@ DefinitionBlock ("", "DSDT", 2, "QCOMM ", "SDM8180 ", 0x00000003)
 
         Device (TSC1)
         {
-            Name (_HID, "GDGT9889")  // _HID: Hardware ID (sweet Goodix GT9896 touch). Revertido apos
-            // o isolamento CONFIRMAR que o hang era o DRIVER fazendo I2C (sem driver = bootou). O driver
-            // (vhidmini.c) teve o I2C RELIGADO (ler touch + limpar IRQ), agora que a AVDD liga via UEFI.
+            Name (_HID, "GDGT9897")  // _HID: courbet touch = nodo "xiaomi-spits" do DT vendor, em QUP SPI SE4 (CS0, 8 MHz). O IC e um Goodix GT9897S/T (goodix_brl_spi) OU um FocalTech FT3658U (focaltech_spi): o kernel vendor habilita os DOIS e o IC se identifica no probe. NAO e o GT9896/I2C do sweet.
             Alias (PSUB, _SUB)
             Name (_UID, One)  // _UID: Unique ID
-            // TSC1 RE-ATIVADO (jun/2026): o voto RPMh CRU (caminho B, no I2cClockDxe) liga a
-            // AVDD (LDO11_C / "ldoc11" no PM6150L) ANTES do reset -> testando se o touch sobe
-            // no Windows. _STA removido = device default habilitado (0x0F). Se der 0x101 = a
-            // AVDD nao subiu de fato (voto ISSUED mas pode nao ter completado o COMPL no RSC)
-            // -> por de volta Method(_STA){Return(Zero)} e a gente refina o voto.
-            Name (_DEP, Package (0x03)  // _DEP: Dependencies (GIO0 de volta - touch nativo via qcgpio)
+            // Fonte: MiCode courbet-r-oss, courbet-sdmmagpie.dtsi: &qupv3_se4_spi > xiaomi-spits@0
+            // (irq=<9 0x2800>=edge falling, reset=gpio8, avdd-gpio/21, iovdd-gpio/72, 8 MHz).
+            // pmavdd = pm6150l_l11 (LDO11_C) - o MESMO rail que a UEFI ja vota via RPMh
+            // (RpmhVoteLdo11C no I2cClockDxe), por isso o voto nao muda de board.
+            Name (_DEP, Package (0x03)  // _DEP: Dependencies (touch nativo via qcgpio)
             {
                 \_SB.GIO0,
-                \_SB.IC10,
+                \_SB.SPI5,
                 \_SB.PEP0
             })
-            // TSC1 RE-ATIVADO (jun/2026): _STA=0 removido. Testando IRQ Edge - o dtbo STOCK confirmou irq-flags=0x02=FALLING EDGE (a mudanca p/ Level foi do mainline, que divergiu do stock). TREE(QCOM0476, mesmo GPIO9 em Edge) segue OFF = touch sozinho no pino.
+            Name (_ADR, Zero)  // _ADR: CS0
             Name (_CCA, Zero)  // _CCA: Cache Coherency Attribute
             Method (_CRS, 0, NotSerialized)  // _CRS: Current Resource Settings
             {
                 Name (RBUF, ResourceTemplate ()
                 {
-                    I2cSerialBusV2 (0x005D, ControllerInitiated, 0x000186A0,  // 100kHz (era 0x61A80=400kHz do template surya; sweet de fabrica = 100kHz, sweet.dts:184)
-                        AddressingMode7Bit, "\\_SB.IC10",
-                        0x00, ResourceConsumer, , Exclusive,
-                        )
-                    GpioInt (Edge, ActiveLow, ExclusiveAndWake, PullUp, 0x0000,  // Level->Edge (jun/2026): o dtbo STOCK do sweet usa irq-flags=0x02=FALLING EDGE; o mainline (sweet.dts) divergiu pra Level. Stock = autoridade -> Edge falling e o que o gt9896 usa de verdade. Combina com o TREE(QCOM0476) no mesmo GPIO9 (que segue OFF, sem conflito).
+                    SpiSerialBusV2 (0x0000, PolarityLow, FourWireMode, 0x08,  // CS0, active-low, 8 bits
+                        ControllerInitiated, 0x007A1200, ClockPolarityLow,   // 8 MHz (spi-max-frequency do nodo xiaomi-spits)
+                        ClockPhaseFirst, "\\_SB.SPI5",
+                        0x00, ResourceConsumer, , Exclusive)
+                    GpioInt (Edge, ActiveLow, ExclusiveAndWake, PullUp, 0x0000,  // GPIO9 = INT (dt: interrupts=<9 0x2800> = falling|oneshot; pinmux drive 16 + pull-up)
                         "\\_SB.GIO0", 0x00, ResourceConsumer, ,
                         )
                         {   // Pin list (GPIO9 = INT do touch, nativo via qcgpio)
@@ -69576,18 +69574,24 @@ DefinitionBlock ("", "DSDT", 2, "QCOMM ", "SDM8180 ", 0x00000003)
                         {
                             0x0008
                         }
-                    GpioIo (Exclusive, PullNone, 0x0000, 0x0000, IoRestrictionOutputOnly,  // GPIO90 = enable do VDDIO 1.8V (active-high)
+                    GpioIo (Exclusive, PullNone, 0x0000, 0x0000, IoRestrictionOutputOnly,  // GPIO72 = enable do iovdd (touch_vddio_vreg, active-high)
                         "\\_SB.GIO0", 0x00, ResourceConsumer, ,
                         )
                         {
-                            0x005A
+                            0x0048
+                        }
+                    GpioIo (Exclusive, PullNone, 0x0000, 0x0000, IoRestrictionOutputOnly,  // GPIO21 = enable do avdd (touch_vddv_vreg, active-high)
+                        "\\_SB.GIO0", 0x00, ResourceConsumer, ,
+                        )
+                        {
+                            0x0015
                         }
                 })
                 Return (RBUF) /* \_SB_.TSC1._CRS.RBUF */
             }
 
-            // >>> GPIO drive p/ acordar o IC (jun/2026): RPIN=GPIO8 (reset), VPIN=GPIO90 (vddio).
-            //     Servido pelo qcgpio (GIO0/QCOM140D e o GeneralPurposeIo provider).
+            // >>> GPIO drive p/ acordar o IC: RPIN=GPIO8 (reset), VPIN=GPIO72 (iovdd),
+            //     APIN=GPIO21 (avdd). Servido pelo qcgpio (GIO0/QCOM140D e o provider).
             OperationRegion (RGPO, GeneralPurposeIo, Zero, One)
             Field (RGPO, ByteAcc, NoLock, Preserve)
             {
@@ -69610,10 +69614,24 @@ DefinitionBlock ("", "DSDT", 2, "QCOMM ", "SDM8180 ", 0x00000003)
                         "\\_SB.GIO0", 0x00, ResourceConsumer, ,
                         )
                         {
-                            0x005A
+                            0x0048
                         }
                 ),
                 VPIN,   1
+            }
+
+            OperationRegion (AGPO, GeneralPurposeIo, Zero, One)
+            Field (AGPO, ByteAcc, NoLock, Preserve)
+            {
+                Connection (
+                    GpioIo (Exclusive, PullNone, 0x0000, 0x0000, IoRestrictionOutputOnly,
+                        "\\_SB.GIO0", 0x00, ResourceConsumer, ,
+                        )
+                        {
+                            0x0015
+                        }
+                ),
+                APIN,   1
             }
 
             Name (PGID, Buffer (0x0A)
@@ -69641,22 +69659,19 @@ DefinitionBlock ("", "DSDT", 2, "QCOMM ", "SDM8180 ", 0x00000003)
 
             Method (_PS0, 0, Serialized)  // _PS0: Power State 0
             {
-                // >>> TESTE (jun/2026): notify qcpep da AVDD REMOVIDO daqui. A AVDD (LDO11_C)
-                //     agora e ligada pela UEFI (voto RPMh cru no I2cClockDxe - PROVADO: o IC
-                //     ACKa no I2C 0x5D!). O `\_SB.PEP0.FLD0 = DBUF` mandava o qcpep votar a AVDD
-                //     pela BSRC/PMICVREGVOTE LDO11_C = o caminho kona-PEP que provavel TRAVA o
-                //     boot (hang no loading). Sem ele, o _PS0 so reseta o IC (que ja tem energia
-                //     da UEFI). Se AINDA travar -> nao e o qcpep; restaurar (DSDT.dsl.pre-nopep)
-                //     e investigar o I2C/clock. Se bootar SEM touch -> a AVDD da UEFI nao persiste
-                //     no Windows (ver voto SLEEP/WAKE no RSC). Se o TOUCH FUNCIONAR -> FIM DA SAGA.
-                Sleep (0x14)     // 20ms (AVDD ja ligada pela UEFI)
-                // >>> RESET DO IC GOODIX gt9896 - agora COM a AVDD ligada:
-                VPIN = One       // GPIO90 high -> liga VDDIO 1.8V (regulador gateado por GPIO)
-                Sleep (0x05)     // >= 4ms de startup do VDDIO
-                RPIN = Zero      // GPIO8 low  -> ASSERT reset (gt9896 = active-low)
+                // Sequencia do driver vendor (goodix_brl_hw.c: brl_power_on): iovdd -> 3ms ->
+                // avdd -> 15ms -> pmavdd (LDO11_C, ja votada pela UEFI) -> solta reset.
+                // O `\_SB.PEP0.FLD0 = DBUF` daqui foi removido em jun/2026 (caminho qcpep que
+                // travava o boot); a AVDD fica com o voto RPMh cru do I2cClockDxe.
+                Sleep (0x14)     // 20ms (pmavdd ja ligada pela UEFI)
+                VPIN = One       // GPIO72 high -> liga iovdd (touch_vddio_vreg)
+                Sleep (0x03)     // 3ms (startup do regulador)
+                APIN = One       // GPIO21 high -> liga avdd (touch_vddv_vreg)
+                Sleep (0x0F)     // 15ms
+                RPIN = Zero      // GPIO8 low  -> ASSERT reset (IC active-low)
                 Sleep (0x05)     // segura >= 2ms
                 RPIN = One       // GPIO8 high -> RELEASE reset (IC comeca a bootar COM energia)
-                Sleep (0x64)     // 100ms p/ o firmware do IC subir antes do 1o I2C
+                Sleep (0x64)     // 100ms p/ o firmware do IC subir antes do 1o SPI
             }
 
             Method (_PS3, 0, NotSerialized)  // _PS3: Power State 3
@@ -71484,7 +71499,7 @@ DefinitionBlock ("", "DSDT", 2, "QCOMM ", "SDM8180 ", 0x00000003)
                 Package (0x07)
                 {
                     "DEVICE", 
-                    "\\_SB.I2C5", 
+                    "\\_SB.SPI5", 
                     Package (0x03)
                     {
                         "COMPONENT", 

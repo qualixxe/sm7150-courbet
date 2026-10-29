@@ -15,7 +15,7 @@ gzip -c < Build/F11/DEBUG_GCC5/FV/F11_UEFI.fd >uefi_image5
 cat sweet.dtb >> uefi_image5
 abootimg --create sweet_uefi.img -k uefi_image5 -r ramdisk-null -f bootimg.cfg
 echo "================ [VERIFY] ================"
-echo "[VERIFY] FVs com GDGT9889 (TSC1/touch):"; grep -al GDGT9889 Build/F11/DEBUG_GCC5/FV/*.Fv 2>/dev/null || echo "   NENHUM -> TSC1 NAO entrou no firmware!"
+echo "[VERIFY] FVs com GDGT9897 (TSC1/touch courbet, SPI SE4):"; grep -al GDGT9897 Build/F11/DEBUG_GCC5/FV/*.Fv 2>/dev/null || echo "   NENHUM -> TSC1 NAO entrou no firmware!"
 echo "[VERIFY] FVs com QCOM1411 (IC10):"; grep -al QCOM1411 Build/F11/DEBUG_GCC5/FV/*.Fv 2>/dev/null || echo "   NENHUM"
 echo "========================================="
 rm uefi_image* Build/ -rf

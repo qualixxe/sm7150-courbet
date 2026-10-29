@@ -73,10 +73,63 @@ From upstream's own status report, on sweet:
 - **no GPU acceleration** — Windows renders through the framebuffer
 - touchscreen disabled; the I2C path deadlocks a core
 - no Wi-Fi, no audio, no modem
-- the DSDT in `F11/AcpiTables` is sweet's, not courbet's
 
-Those are expected to carry over, and the ACPI one is the most likely to matter
-here.
+Those are expected to carry over. The ACPI is the one that had to be corrected,
+and it now is — see the next section.
+
+## The DSDT is courbet's now
+
+Upstream's `F11/AcpiTables/DSDT.dsl` describes sweet's hardware. Everything in
+it is SoC-level (UFS, USB, PMIC, PCIe, CPUs, PEP, GPIO) and therefore correct
+for courbet too — except the one device that is wired differently: the
+touchscreen.
+
+Where the facts come from: Xiaomi's own kernel source for this board, branch
+`courbet-r-oss` of `MiCode/Xiaomi_Kernel_OpenSource` (the same drop that
+`courbet.dtb` in this repository was built from).
+
+| | sweet | courbet |
+|---|---|---|
+| device-tree node | `&qupv3_se7_i2c > gt9896@5d` | `&qupv3_se4_spi > xiaomi-spits@0` |
+| bus | I2C7, GENI SE7, 0xA84000, GSI 0x182 | SPI, GENI SE4, 0x890000, GSI 0x27D, CS0, 8 MHz |
+| chip | Goodix GT9896 (`goodix,gt9896`) | Goodix GT9897S/T (`goodix_brl_spi`) **or** FocalTech FT3658U (`focaltech_spi`) |
+| kernel driver enabled | GTX8 (I2C) | `CONFIG_TOUCHSCREEN_GOODIX_BRL=y` + `CONFIG_TOUCHSCREEN_FTS=y`, both SPI; `CONFIG_TOUCHSCREEN_GOODIX_GTX8` is **not** set |
+| INT | TLMM GPIO9, falling edge | TLMM GPIO9, falling edge |
+| RESET | TLMM GPIO8 | TLMM GPIO8 |
+| I/O rail (iovdd) | GPIO90 | GPIO72 (`touch_vddio_vreg`) |
+| analog rail (avdd) | — | GPIO21 (`touch_vddv_vreg`) |
+| PMIC rail (pmavdd) | PM6150L LDO11_C (`vreg_l11c`) | PM6150L LDO11_C (`pm6150l_l11`) |
+| power-on order | — | iovdd → 3 ms → avdd → 15 ms → pmavdd → release reset (`brl_power_on`) |
+
+Two conclusions worth writing down, because both were guesses before:
+
+- **courbet has no touch on I2C7.** `courbet-sdmmagpie.dtsi` does carry a
+  `goodix@5d` node on `qupv3_se7_i2c`, but no driver for it is enabled in
+  `courbet_user_defconfig`, so no Android build of this board can use it. The
+  node is shared boilerplate, not this phone's wiring. The live node is the SPI
+  one, and the FocalTech driver contains code that parses the `k9a` panel name
+  out of the kernel command line — courbet-specific code in a SPI driver.
+- **The PMIC vote does not move.** The RPMh vote in `I2cClockDxe`
+  (`RpmhVoteLdo11C`, resource `ldoc11`) was written for sweet, but courbet's
+  touch PMIC rail is the same LDO11_C. Only the two GPIO-gated rails are new.
+
+What changed in `DSDT.dsl`:
+
+- `I2C5` (SE4 at 0x890000, which no board used) became **`SPI5`** with `_HID`
+  `QCOM040F` — the QUP SPI controller the touch sits on. The PEP0 table's
+  `\\_SB.I2C5` string moved with it.
+- `TSC1` now hangs off `\_SB.SPI5` instead of `\_SB.IC10`: `SpiSerialBusV2`
+  (CS0, 8 MHz, mode 0), `GpioInt` edge-low on GPIO9, `GpioIo` outputs for reset
+  (GPIO8), iovdd (GPIO72) and avdd (GPIO21), plus the matching operation
+  regions so `_PS0` can drive all three pins. The `_HID` is `GDGT9897` — a chip
+  family the SPI drivers above actually bind; the sweet driver's `GDGT9889`
+  stays out of the way on purpose.
+- `_PS0` follows the vendor power order above.
+
+`tools/fdt.py` can be pointed at any of the trees in this repository to
+cross-check, and `sweetbuild.sh` now fails loudly if `GDGT9897` did not make it
+into the firmware volumes.
+
 
 ## A fixed upstream workflow
 
