@@ -99,7 +99,7 @@ Where the facts come from: Xiaomi's own kernel source for this board, branch
 | I/O rail (iovdd) | GPIO90 | GPIO72 (`touch_vddio_vreg`) |
 | analog rail (avdd) | — | GPIO21 (`touch_vddv_vreg`) |
 | PMIC rail (pmavdd) | PM6150L LDO11_C (`vreg_l11c`) | PM6150L LDO11_C (`pm6150l_l11`) |
-| power-on order | — | iovdd → 3 ms → avdd → 15 ms → pmavdd → release reset (`brl_power_on`) |
+| power-on order | — | iovdd → 3 ms → avdd → pmavdd → 15 ms → release reset (`brl_power_on`), first SPI op 5 ms after |
 
 Two conclusions worth writing down, because both were guesses before:
 
@@ -129,6 +129,25 @@ What changed in `DSDT.dsl`:
 `tools/fdt.py` can be pointed at any of the trees in this repository to
 cross-check, and `sweetbuild.sh` now fails loudly if `GDGT9897` did not make it
 into the firmware volumes.
+
+### Checked against the phone itself
+
+The table above is not just kernel-source archaeology. With the phone in
+recovery (adb root), its running device tree can be read directly, and every
+value in the DSDT was compared against it:
+
+    adb shell od -An -tx1 /proc/device-tree/soc/spi@0x890000/interrupts        # 00 00 02 5d -> GSI 0x27D
+    adb shell od -An -tx1 /proc/device-tree/soc/spi@0x890000/reg              # 00890000 4000
+    adb shell od -An -tx1 /proc/device-tree/soc/spi@0x890000/xiaomi-spits@0/reg  # CS0
+    adb shell od -An -c  /proc/device-tree/soc/spi@0x890000/xiaomi-spits@0/compatible  # "xiaomi,spits"
+    adb shell od -An -tx1 /proc/device-tree/soc/spi@0x890000/xiaomi-spits@0/spi-max-frequency  # 0x007A1200 = 8 MHz
+    adb shell od -An -tx1 /proc/device-tree/soc/spi@0x890000/xiaomi-spits@0/goodix,irq-gpio    # tlmm 9, 0x2800
+
+and the same for `touch_vddio_vreg` (GPIO72), `touch_vddv_vreg` (GPIO21) and
+the pmavdd phandle, which resolves to `rpmh-regulator-ldoc11` →
+`regulator-pm6150l-l11` with `qcom,resource-name = "ldoc11"` — the exact string
+`RpmhVoteLdo11C` searches for in cmd-db. The board also still reports
+`qcom,msm-id = <0x16d>` and `qcom,msm-name = "SDMMAGPIE"`.
 
 
 ## A fixed upstream workflow

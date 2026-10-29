@@ -69457,7 +69457,7 @@ DefinitionBlock ("", "DSDT", 2, "QCOMM ", "SDM8180 ", 0x00000003)
 
         Device (IC10)
         {
-            Name (_HID, "QCOM1411")  // _HID: Hardware ID  [qci2c ON, touch TSC1 desativado p/ teste]
+            Name (_HID, "QCOM1411")  // _HID: Hardware ID  [qci2c ON, SE7 @0xA84000. Nao e mais o barramento do touch: no courbet o TSC1 esta no SPI5/SE4]
             Alias (PSUB, _SUB)
             Name (_UID, 0x0A)  // _UID: Unique ID
             Name (_DEP, Package (0x01)  // _DEP: Dependencies
@@ -69552,7 +69552,6 @@ DefinitionBlock ("", "DSDT", 2, "QCOMM ", "SDM8180 ", 0x00000003)
                 \_SB.SPI5,
                 \_SB.PEP0
             })
-            Name (_ADR, Zero)  // _ADR: CS0
             Name (_CCA, Zero)  // _CCA: Cache Coherency Attribute
             Method (_CRS, 0, NotSerialized)  // _CRS: Current Resource Settings
             {
@@ -69659,10 +69658,11 @@ DefinitionBlock ("", "DSDT", 2, "QCOMM ", "SDM8180 ", 0x00000003)
 
             Method (_PS0, 0, Serialized)  // _PS0: Power State 0
             {
-                // Sequencia do driver vendor (goodix_brl_hw.c: brl_power_on): iovdd -> 3ms ->
-                // avdd -> 15ms -> pmavdd (LDO11_C, ja votada pela UEFI) -> solta reset.
+                // Sequencia do driver vendor (hw.c: brl_power_on, caminho COM reguladores):
+                // iovdd -> 3ms -> avdd -> pmavdd -> 15ms -> solta reset; 1o SPI 5ms depois.
+                // pmavdd (LDO11_C) ja foi votada pela UEFI, entao aqui so sobra o resto.
                 // O `\_SB.PEP0.FLD0 = DBUF` daqui foi removido em jun/2026 (caminho qcpep que
-                // travava o boot); a AVDD fica com o voto RPMh cru do I2cClockDxe.
+                // travava o boot); a pmavdd fica com o voto RPMh cru do I2cClockDxe.
                 Sleep (0x14)     // 20ms (pmavdd ja ligada pela UEFI)
                 VPIN = One       // GPIO72 high -> liga iovdd (touch_vddio_vreg)
                 Sleep (0x03)     // 3ms (startup do regulador)
