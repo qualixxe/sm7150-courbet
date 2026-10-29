@@ -109,10 +109,12 @@ at offset 0x01059000, 398 043 bytes. The one carried by our UEFI image is the
 same length and byte-for-byte identical (sha256 1a9a51c6...).
 
 That tree says `model = Qualcomm Technologies, Inc. SDMMAGPIE SoC` and
-`compatible = qcom,sdmmagpie`, which is an SM8150 name on an SM7325 phone. It
-looked like a substituted tree. It is not - it is Xiaomi's own, shipped in
-Xiaomi's own image, so the name is what the vendor chose and not evidence of the
-wrong platform. The device tree line of investigation is closed.
+`compatible = qcom,sdmmagpie`. SDMMAGPIE is the kernel-side name of SM7150, the
+SoC this phone actually has, with `qcom,msm-id = 0x16d` = 365 to prove it; see
+FINDINGS.md, which also corrects the SM8150 and SM7325 readings this file
+previously carried. It looked like a substituted tree. It is not - it is
+Xiaomi's own, shipped in Xiaomi's own image, so the name is what the vendor
+chose and not evidence of the wrong platform. The device tree line of investigation is closed.
 
 It does carry one thing worth recording: `/soc/ufshc@1d84000` and
 `/soc/ufsphy_mem@1d87000` are both `status = disabled`. That would explain a

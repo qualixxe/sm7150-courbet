@@ -6,9 +6,10 @@
 # bootloader expects on this platform, so swapping the tree is enough to retarget
 # the firmware at another board of the same SoC family.
 #
-# sweet is a Redmi Note 10 Pro (SM7325). courbet is a Mi 11 Lite 4G, also
-# SM7325, so the firmware is expected to carry over; the board differences live
-# in the device tree.
+# sweet is a Redmi Note 10 Pro, courbet is a Mi 11 Lite 4G. Both are SM7150 -
+# SDMMAGPIE, Snapdragon 732G, with a PM6150, which is what the device trees of
+# both firmwares say - so the firmware is expected to carry over and the board
+# differences live in the device tree.
 #
 # tools/swap_dtb.py rebuilds the image and refuses to write unless it can first
 # reproduce the input byte for byte, so a packaging mistake cannot silently

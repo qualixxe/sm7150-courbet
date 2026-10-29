@@ -1,4 +1,4 @@
-name: Build UEFI (courbet, SM7325)
+name: Build UEFI (courbet, SM7150)
 
 # The upstream workflow in this fork's history triggered on "master" while the
 # branch is "main", so it never ran on a push. This one triggers on the branch

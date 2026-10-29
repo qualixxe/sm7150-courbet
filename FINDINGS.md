@@ -141,3 +141,41 @@ Two details that were only knowable by running it:
   nothing attached to stdin the question has no answer, and mtools exits 1 in
   1.7 ms having written nothing to either stream - which is how run 3 and run 4
   failed with no error message at all.
+
+## The same test on the phone, which is the run that counts
+
+The bundle CI produced was unpacked to `/data/aavf` on courbet and run twice
+with the phone's own emulator, `/data/qemu/bin/qemu-system-aarch64`, a static
+8.2.2 built here:
+
+| on courbet, QEMU 8.2.2 TCG | FAT read | EFI handoff |
+| ---                     | ---      | ---         |
+| BUS=virtio              | yes      | yes         |
+| BUS=usb                 | yes      | yes         |
+
+Both runs ended with `RESULT: QEMU-SMOKE-OK`, the same guest hash
+`3b6a07d0d404...`, and `reboot: Power down` with the emulator exiting 0. The
+firmware was the one this workflow builds, not a distro file.
+
+The USB path needed no change to the drivers: `uefi-run.sh` selects the first
+PCI USB host controller the binary actually registers, and on 8.2.2 that is
+`qemu-xhci`, which the firmware's own log shows it loaded (`XhciDxe`,
+`UsbBusDxe`, `UsbMassStorageDxe`) before mounting the ESP. nec-1527 is not in
+that build either; only `nec-usb-xhci` and `qemu-xhci` are.
+
+What the two runs measured is worth more than the pass:
+
+    virtio  1099 cs for 64 MB -> 5963 KB/s
+    usb      558 cs for 64 MB -> 11744 KB/s
+    direct kernel boot, run 11   -> 9102 KB/s
+
+The bench is a sha256 of 64 MB inside the guest, pure CPU work, and it moved by
+a factor of two between two runs of the same guest on the same machine minutes
+apart. So the honest number for TCG on courbet is a band, roughly 6 to 12 MB/s,
+not the single figure the first run suggested, and any plan built on it should
+assume the low end.
+
+Branch A is now closed as far as emulation goes: a firmware built from this
+tree reads a FAT volume that lives in a file on userdata and boots an EFI binary
+out of it, over both transports, on the device. The GPT does not have to be
+touched, which was the point.
