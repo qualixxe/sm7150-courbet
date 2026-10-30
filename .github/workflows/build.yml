@@ -46,7 +46,7 @@ jobs:
 
       - name: Build firmware
         run: |
-          bash ./sweetbuild.sh
+          bash ./courbetbuild.sh
 
       - name: Build device tree variants
         run: |

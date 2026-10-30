@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build bootable images carrying different device trees.
 #
-# sweetbuild.sh produces sweet_uefi.img, a boot image whose kernel is a gzip
+# courbetbuild.sh produces courbet_uefi.img, a boot image whose kernel is a gzip
 # stream followed by a raw device tree. That layout is what the vendor
 # bootloader expects on this platform, so swapping the tree is enough to retarget
 # the firmware at another board of the same SoC family.
@@ -17,11 +17,11 @@
 
 set -euo pipefail
 
-BASE="sweet_uefi.img"
+BASE="courbet_uefi.img"
 PARTITION_SIZE=$((128 * 1024 * 1024))
 
 if [ ! -f "$BASE" ]; then
-    echo "error: $BASE not found; run sweetbuild.sh first" >&2
+    echo "error: $BASE not found; run courbetbuild.sh first" >&2
     exit 1
 fi
 

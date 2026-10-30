@@ -1,88 +1,99 @@
-# edk2-sweet — Windows on ARM for the Xiaomi Redmi Note 10 Pro (sweet)
+# edk2-courbet — Windows on ARM for the Xiaomi Mi 11 Lite 4G
 
-UEFI (EDK2 / Project Mu) firmware that boots **Windows 11 ARM64** on the **Xiaomi Redmi Note 10 Pro** — codename **sweet**, Snapdragon 732G (**SM7150**).
+UEFI (EDK2 / Project Mu) firmware and a Windows 11 ARM64 install path for the
+**Xiaomi Mi 11 Lite 4G** — codename **courbet**, Qualcomm **SM7150-AC**
+(SDMMAGPIE, Snapdragon 732G, PM6150).
 
-Forked from [edk2-porting/edk2-sm7150](https://github.com/edk2-porting/edk2-sm7150) and built on top of the Renegade / Project Aloha / dopaemon Windows-on-ARM ecosystem.
+Forked from [edk2-porting/edk2-sm7150](https://github.com/edk2-porting/edk2-sm7150)
+through [Cristiano1103/sm7150-sweet](https://github.com/Cristiano1103/sm7150-sweet).
+The parent project targets the Redmi Note 10 Pro (**sweet**); this branch
+retargets the same silicon at courbet and does the Windows installation work on
+the phone itself. What the two boards share, and where they diverge, is written
+down in [`COURBET.md`](COURBET.md).
 
-> **It boots to a usable Windows 11 ARM64 desktop.** Storage, display and buttons work. Several subsystems (touch, GPU acceleration, USB-OTG, modem, etc.) are still works in progress — see [Status](#status) below.
-
----
-
-## ⚠️ DISCLAIMER — READ BEFORE FLASHING ⚠️
-
-**This is experimental, hobbyist, work-in-progress firmware. Flashing it can permanently brick your device.**
-
-- This software is provided **"AS IS", with NO WARRANTY of any kind**, express or implied.
-- **There is a real risk of bricking, data loss, or hardware damage.** You can lose your data, your bootloader, or the entire phone.
-- **The author takes NO responsibility and accepts NO liability** for any damage, loss, or consequence resulting from using, flashing, or modifying anything in this repository.
-- This is **not** an official product and is **not** affiliated with Xiaomi, Qualcomm, or Microsoft.
-- By using anything here, **you accept full responsibility for whatever happens to your device. You have been warned.**
-- Only use a device you are willing to lose, keep a **full backup**, and make sure you know how to restore stock firmware via **EDL / 9008** before you start.
-
-If you are not comfortable with bootloaders, fastboot, EDL recovery, and the real possibility of a hard brick — **stop here.**
+> **Brick risk.** Experimental, hobbyist firmware. `fastboot boot` writes
+> nothing and is the only supported way to run it; `fastboot flash boot`
+> overwrites the Android boot partition, so keep a backup of it (`dd` from
+> recovery) before you flash. Nothing here needs EDL, and nothing here should
+> ever be tried after the phone has fallen into EDL — courbet has no
+> user-accessible EDL mode.
 
 ---
-
-## What is this?
-
-An AArch64 UEFI implementation (Project Mu based) that lets the SM7150-based Redmi Note 10 Pro (sweet) boot Windows 11 ARM64. UEFI comes up in place of the Android boot chain, exposes ACPI + a framebuffer + storage, and hands off to the Windows ARM64 boot manager.
 
 ## Status
 
-> Honest, current state. "Works" = usable. "WIP" = it boots / enumerates but is not functional yet.
+Honest, current state.
 
-### Works
-- **Boots to the Windows 11 ARM64 desktop** (usable with the touchscreen disabled).
-- **Internal storage** — UFS.
-- **Display** — framebuffer (no GPU acceleration; see below).
-- **Buttons** — power / volume / side keys.
-- **ACPI** (DSDT).
-- **Watchdog** handling.
-- **Touch power rail (AVDD)** — brought up from UEFI via a raw RPMh vote (the touch IC ACKs on I2C 0x5D).
+### Firmware
+- Builds in CI (`.github/workflows/build.yml`) and publishes three boot images
+  that differ only in the device tree they carry: `sweet.dtb`,
+  `courbet.dtb`, `7150.dtb`. All three are `fastboot boot`-able and written
+  into `dist/`.
+- Internal **UFS** storage works, so the firmware can read an installation
+  medium — that was the blocker upstream had to solve first.
+- **ACPI/DSDT is courbet's**: the touch controller hangs off SPI (GENI SE4,
+  `0x890000`, CS0, 8 MHz) as `GDGT9897`, with iovdd on GPIO72, avdd on GPIO21,
+  reset on GPIO8, interrupt on GPIO9 and the PMIC rail on PM6150L LDO11_C.
+  Every value was cross-checked against the phone's own running device tree.
+- Display through the framebuffer, buttons, watchdog.
 
-### Work in progress / not functional
-- **Touchscreen (Goodix gt9896, I2C 0x5D)** — disabled by default. The ACPI device and the `qci2c` driver enumerate, but the I2C transaction to the QUP **deadlocks a core → `CLOCK_WATCHDOG_TIMEOUT (0x101)`**. IRQ type, I2C clock and GPIOs are all stock-matched; the deadlock lives in the qci2c ↔ QUP / clock-NoC path and needs a serial / WinDbg session to pinpoint. Re-enable by removing the `_STA` override on the `TSC1` device in the DSDT.
-- **GPU acceleration** — no Adreno DXGK driver loads, so Windows renders in **software** via the framebuffer (slow UI, no hardware acceleration).
-- **USB-OTG (host mode)** — the role-switch (`UrsSynopsys`) binds, but VBUS comes from the pm6150 SMB5 charger, which needs the PMIC stack (not driven) — so no OTG power. USB **device** mode (fastboot) works.
-- **Battery / power management** — intermittent `INTERNAL_POWER_ERROR (0xA0)`; the battery stack is non-functional.
-- **Not brought up:** modem / cellular, Wi-Fi / Bluetooth, camera, GPS, sensors, audio.
+### Windows 11 ARM64
+Installed the slow, safe way first: **Windows itself runs on the phone under
+QEMU/TCG**, with the install ISO and an 80 GB disk image as ordinary files on
+`/data`. No partitions are touched. WinPE boots, Setup passes the TPM/Secure
+Boot/RAM gates with `LabConfig`, and the image is staged onto the disk image.
+The phone-side scripts live in [`linux-prep/`](linux-prep/).
+
+Booting Windows this way is a bring-up step, not the goal: it proves the
+Windows stack (bootmgfw → winload → WinPE → Setup) on courbet hardware while
+the native path (firmware → Windows on UFS) is still being worked on.
+
+### Not working yet
+- **Touchscreen.** The DSDT device is right; the QUP/SPI driver path is not.
+  See [`docs/TOUCH-SAGA.md`](docs/TOUCH-SAGA.md) and task notes in
+  `COURBET.md`.
+- **GPU acceleration** — Windows renders in software through the framebuffer.
+- **Wi-Fi, Bluetooth, modem, audio, camera, sensors.**
+- **USB host mode / OTG power** — USB device mode works.
 
 ## Build
 
-Requires a Linux environment (the build does **not** run on Windows or Android).
+Requires a Linux environment (not Windows, not Android).
 
 ```bash
-./sweetbuild.sh
+./courbetbuild.sh          # -> courbet_uefi.img
+./package_variants.sh      # -> out/courbet-with-{sweet,courbet,7150}-dtb.img
 ```
 
-This runs `iasl` on the DSDT and builds the UEFI, producing `sweet_uefi.img`.
+`courbetbuild.sh` recompiles `F11/AcpiTables/DSDT.dsl` first and fails loudly if
+`GDGT9897` (the courbet touch) did not make it into the firmware volumes.
 
-## Flash
-
-> Bootloader must be unlocked. **Brick risk — read the disclaimer first.**
+## Run
 
 ```bash
-fastboot flash boot sweet_uefi.img
+fastboot boot out/courbet-with-courbet-dtb.img
 ```
 
-Refer to the Renegade / WoA community guides for the exact partition layout and the full install flow (including deploying the Windows ARM64 image to userdata).
+`fastboot boot` transfers the image to RAM and writes nothing, so a wrong
+package cannot brick the phone — it just does not boot. Try the three trees and
+keep the one that works.
 
-## Drivers (Windows BSP)
-
-Windows-side hardware support comes from a separate board support package (Qualcomm / moorea-derived drivers), injected into the Windows image offline via DISM. The drivers live in a companion repository so this repo stays focused on the UEFI:
-
-**→ [sm7150-sweet-drivers](https://github.com/Cristiano1103/sm7150-sweet-drivers)** — curated sweet driver pack + injection scripts.
+The Windows install path is described in [`linux-prep/`](linux-prep/): QEMU on
+the phone in recovery, the ISO and disk image as files under `/data`, QMP for
+input and screenshots.
 
 ## Documentation
 
-In-depth reverse-engineering notes and the debugging journey live in [`docs/`](docs/):
-- [`docs/TOUCH-SAGA.md`](docs/TOUCH-SAGA.md)
-- [`docs/sweet-woa-saga.html`](docs/sweet-woa-saga.html)
-- [`docs/sweet-commands.html`](docs/sweet-commands.html)
+- [`COURBET.md`](COURBET.md) — what differs between sweet and courbet, the DSDT
+  changes, and how they were verified against the live device tree.
+- [`FINDINGS.md`](FINDINGS.md) — reverse-engineering notes.
+- [`STORAGE.md`](STORAGE.md) — storage bring-up.
+- [`docs/TOUCH-SAGA.md`](docs/TOUCH-SAGA.md) — the touch investigation.
 
 ## Acknowledgements
 
 - [edk2-porting / edk2-sm7150](https://github.com/edk2-porting/edk2-sm7150) (Renegade Project) — the SM7150 UEFI base.
+- [Cristiano1103/sm7150-sweet](https://github.com/Cristiano1103/sm7150-sweet) — the sweet port this forks from, and its driver pack.
 - [Project Aloha](https://github.com/Project-Aloha) and [Project Silicium](https://github.com/Project-Silicium) — the Windows-on-Snapdragon ecosystem.
 - Gustave Monce and [mu_andromeda_platforms](https://github.com/WOA-Project/mu_andromeda_platforms) / the [WOA-Project](https://github.com/WOA-Project).
 - [Project Mu](https://microsoft.github.io/mu/).
@@ -90,4 +101,7 @@ In-depth reverse-engineering notes and the debugging journey live in [`docs/`](d
 
 ## License
 
-The UEFI code inherits the licenses of its upstream EDK2 / Project Mu sources. Driver binaries are the property of their respective owners and are redistributed for interoperability and research purposes only. See [LICENSE](LICENSE) if present.
+The UEFI code inherits the licenses of its upstream EDK2 / Project Mu sources.
+Driver binaries are the property of their respective owners and are
+redistributed for interoperability and research purposes only. See
+[LICENSE](LICENSE) if present.
