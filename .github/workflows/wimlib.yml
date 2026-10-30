@@ -6,9 +6,10 @@ name: wimlib (static aarch64)
 # it as a plain aarch64 binary at disk speed, so it is cross-built here as a
 # single self-contained file and committed next to the images.
 #
-# Static glibc on purpose: the phone runs Android's bionic, not glibc, and a
-# dynamically linked Linux binary would find no loader there. wimlib needs no
-# network and no libxml2, so a static link costs nothing.
+# Static musl on purpose: the phone runs Android's bionic, not glibc, and a
+# dynamically linked Linux binary would find no loader there. gcc-aarch64 with
+# LDFLAGS=-static still produced a PIE binary against the cross glibc, so the
+# toolchain is musl instead, where a static link is the normal case.
 
 on:
   workflow_dispatch:
@@ -31,8 +32,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential autoconf automake libtool pkg-config \
-            gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+            build-essential autoconf automake libtool pkg-config
+          curl -fsSL -o musl.tgz https://musl.cc/aarch64-linux-musl-cross.tgz \
+            || curl -fsSL -o musl.tgz https://more.musl.cc/11.2.1/x86_64-linux-musl/aarch64-linux-musl-cross.tgz
+          tar xf musl.tgz
+          echo "$PWD/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+          "$PWD/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc" --version | head -1
 
       - name: Source
         run: |
@@ -46,15 +51,16 @@ jobs:
           set -euo pipefail
           cd wimlib-1.14.4
           ./bootstrap
-          ./configure --host=aarch64-linux-gnu \
+          ./configure --host=aarch64-linux-musl \
             --disable-shared --enable-static \
             --without-ntfs-3g --without-fuse --disable-nls \
-            CC=aarch64-linux-gnu-gcc LDFLAGS="-static"
-          make -j"$(nproc)"
+            CC=aarch64-linux-musl-gcc LDFLAGS="-static" \
+            CFLAGS="-O2 -fno-pie" 
+          make -j"$(nproc)" LDFLAGS="-static"
           # the build is non-recursive, so the linked binary lands in the top dir
           BIN=$(find . -maxdepth 1 -name 'wimlib-imagex' -type f)
           file "$BIN"
-          "$BIN" --version | head -3
+          file "$BIN" | grep -q 'statically linked'
           echo "BIN=$BIN" >> "$GITHUB_ENV"
 
       - name: Publish
