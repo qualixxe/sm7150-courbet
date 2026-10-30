@@ -1,0 +1,69 @@
+name: wimlib (static aarch64)
+
+# Unpacking install.wim into the NTFS volume on the phone has to happen
+# natively: Windows Setup doing the same job under emulation was measured at
+# ~16 KB/s of disk growth, which is days for a 20 GB Windows tree. wimlib does
+# it as a plain aarch64 binary at disk speed, so it is cross-built here as a
+# single self-contained file and committed next to the images.
+#
+# Static glibc on purpose: the phone runs Android's bionic, not glibc, and a
+# dynamically linked Linux binary would find no loader there. wimlib needs no
+# network and no libxml2, so a static link costs nothing.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/wimlib.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf automake libtool pkg-config \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+
+      - name: Source
+        run: |
+          curl -fsSL -o wimlib.tar.gz \
+            https://github.com/ebiggers/wimlib/archive/refs/tags/v1.14.4.tar.gz
+          tar xf wimlib.tar.gz
+          ls wimlib-1.14.4 | head
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          cd wimlib-1.14.4
+          ./bootstrap
+          ./configure --host=aarch64-linux-gnu \
+            --disable-shared --enable-static \
+            --without-ntfs-3g --without-fuse --disable-nls \
+            CC=aarch64-linux-gnu-gcc LDFLAGS="-static"
+          make -j"$(nproc)"
+          file programs/wimlib-imagex
+          programs/wimlib-imagex --version | head -3
+
+      - name: Publish
+        run: |
+          set -euo pipefail
+          mkdir -p dist/tools
+          cp wimlib-1.14.4/programs/wimlib-imagex dist/tools/wimlib-imagex-aarch64
+          chmod +x dist/tools/wimlib-imagex-aarch64
+          ls -l dist/tools
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f dist/tools
+          git commit -m "Publish static wimlib-imagex (aarch64) [skip ci]" || echo "binary unchanged"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
