@@ -51,14 +51,16 @@ jobs:
             --without-ntfs-3g --without-fuse --disable-nls \
             CC=aarch64-linux-gnu-gcc LDFLAGS="-static"
           make -j"$(nproc)"
-          file programs/wimlib-imagex
-          programs/wimlib-imagex --version | head -3
+          # libtool leaves the real file in .libs/ and a shell wrapper next to it
+          find . -name 'wimlib-imagex' -type f | sort
+          file programs/.libs/wimlib-imagex
+          programs/.libs/wimlib-imagex --version | head -3
 
       - name: Publish
         run: |
           set -euo pipefail
           mkdir -p dist/tools
-          cp wimlib-1.14.4/programs/wimlib-imagex dist/tools/wimlib-imagex-aarch64
+          cp wimlib-1.14.4/programs/.libs/wimlib-imagex dist/tools/wimlib-imagex-aarch64
           chmod +x dist/tools/wimlib-imagex-aarch64
           ls -l dist/tools
           git config user.name  "github-actions[bot]"
