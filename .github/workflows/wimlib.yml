@@ -58,7 +58,7 @@ jobs:
           BIN=$(find . -maxdepth 1 -name 'wimlib-imagex' -type f)
           file "$BIN"
           file "$BIN" | grep -q 'statically linked'
-          echo "BIN=$BIN" >> "$GITHUB_ENV"
+          echo "BIN=$(realpath "$BIN")" >> "$GITHUB_ENV"
 
       - name: Publish
         run: |
