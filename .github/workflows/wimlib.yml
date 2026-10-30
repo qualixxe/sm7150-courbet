@@ -32,12 +32,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential autoconf automake libtool pkg-config
-          curl -fsSL -o musl.tgz https://musl.cc/aarch64-linux-musl-cross.tgz \
-            || curl -fsSL -o musl.tgz https://more.musl.cc/11.2.1/x86_64-linux-musl/aarch64-linux-musl-cross.tgz
-          tar xf musl.tgz
-          echo "$PWD/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
-          "$PWD/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc" --version | head -1
+            build-essential autoconf automake libtool pkg-config \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
       - name: Source
         run: |
@@ -51,12 +47,13 @@ jobs:
           set -euo pipefail
           cd wimlib-1.14.4
           ./bootstrap
-          ./configure --host=aarch64-linux-musl \
+          ./configure --host=aarch64-linux-gnu \
             --disable-shared --enable-static \
             --without-ntfs-3g --without-fuse --disable-nls \
-            CC=aarch64-linux-musl-gcc LDFLAGS="-static" \
-            CFLAGS="-O2 -fno-pie" 
-          make -j"$(nproc)" LDFLAGS="-static"
+            CC=aarch64-linux-gnu-gcc CFLAGS="-O2 -fno-pie" 
+          # -all-static, not -static: libtool treats a bare -static as "do not
+          # build shared libs" and still links the program against libc.so.
+          make -j"$(nproc)" LDFLAGS="-all-static"
           # the build is non-recursive, so the linked binary lands in the top dir
           BIN=$(find . -maxdepth 1 -name 'wimlib-imagex' -type f)
           file "$BIN"
