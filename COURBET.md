@@ -35,7 +35,7 @@ storage driver the firmware cannot read any installation medium.
 Upstream, unchanged, builds one image:
 
 ```bash
-./sweetbuild.sh          # -> sweet_uefi.img
+./courbetbuild.sh        # -> courbet_uefi.img
 ```
 
 Here, the same firmware is packaged three times with three device trees, so the
@@ -127,7 +127,7 @@ What changed in `DSDT.dsl`:
 - `_PS0` follows the vendor power order above.
 
 `tools/fdt.py` can be pointed at any of the trees in this repository to
-cross-check, and `sweetbuild.sh` now fails loudly if `GDGT9897` did not make it
+cross-check, and `courbetbuild.sh` now fails loudly if `GDGT9897` did not make it
 into the firmware volumes.
 
 ### Checked against the phone itself
