@@ -50,7 +50,7 @@ jobs:
           ./configure --host=aarch64-linux-gnu \
             --disable-shared --enable-static \
             --without-ntfs-3g --without-fuse --disable-nls \
-            CC=aarch64-linux-gnu-gcc CFLAGS="-O2 -fno-pie" 
+            CC=aarch64-linux-gnu-gcc
           # -all-static, not -static: libtool treats a bare -static as "do not
           # build shared libs" and still links the program against libc.so.
           make -j"$(nproc)" LDFLAGS="-all-static"
