@@ -580,6 +580,15 @@ PlatformBootManagerAfterConsole (
   //
   EfiBootManagerConnectAll ();
 
+  //
+  // XHCI/USB enumeration finishes after ConnectAll returns. Without a pause
+  // the mass-storage driver can attach too late and the scan below would see
+  // no USB boot option at all. Wait, then connect once more to pick up the
+  // handles that appeared in the meantime.
+  //
+  gBS->Stall (2 * 1000 * 1000);
+  EfiBootManagerConnectAll ();
+
   Status = gBS->LocateProtocol (&gEsrtManagementProtocolGuid, NULL,
                   (VOID **)&EsrtManagement);
   if (!EFI_ERROR (Status)) {
