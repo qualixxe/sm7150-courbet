@@ -433,26 +433,13 @@ PlatformRegisterOptionsAndKeys (
   )
 {
   //
-  // FILE_GUID do SimpleInitMain.inf (UEFI_APPLICATION = o menu GUI).
-  // Bootamos o menu SimpleInit (desenha direto no framebuffer) em vez da
-  // UEFI Shell, que travava num ASSERT(Device Error) interno por causa do
+  // Headless: nenhuma opcao de menu e registrada aqui. Com o timeout 0 o BDS
+  // segue direto pela BootOrder montada por EfiBootManagerRefreshAllBootOption
+  // (USB com Windows, UFS) sem esperar tecla - os botoes desta placa nao
+  // chegam ao firmware, entao qualquer menu nao seria navegavel de todo modo.
+  //
+  // A UEFI Shell continua fora: ela trava num ASSERT(Device Error) por causa do
   // console serial sem input (FrameBufferSerialPortLib e output-only).
-  //
-  STATIC CONST EFI_GUID  SimpleInitFileGuid = {
-    0x6D77B2BB, 0x69EB, 0x42AB, { 0xBE, 0xCF, 0x4F, 0x40, 0xC8, 0x95, 0x68, 0xC3 }
-  };
-  INTN MenuOption;
-
-  MenuOption = PlatformRegisterFvBootOption (
-                 &SimpleInitFileGuid,
-                 L"SimpleInit Menu",
-                 LOAD_OPTION_ACTIVE
-                 );
-  (VOID)MenuOption;
-
-  //
-  // Fallback (desativado): a UEFI Shell trava em ASSERT no build DEBUG.
-  // PlatformRegisterFvBootOption (&gUefiShellFileGuid, L"UEFI Shell", LOAD_OPTION_ACTIVE);
   //
 }
 

@@ -173,9 +173,9 @@ READ_LOCK_STATUS   = TRUE
   # INF MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
 
   #
-  # USB Mass Storage Support
+  # USB Mass Storage Support (host side, for a Windows install stick over OTG)
   #
-  #INF MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassStorageDxe.inf
+  INF MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassStorageDxe.inf
 
   #
   # USB Peripheral Support
@@ -261,9 +261,9 @@ READ_LOCK_STATUS   = TRUE
   INF MdeModulePkg/Application/UiApp/UiApp.inf
 
   #
-  # Simple Init GUI
+  # Simple Init GUI is not shipped: the firmware boots the OS directly.
   #
-  INF src/main/SimpleInitMain.inf
+  #INF src/main/SimpleInitMain.inf
 
 [FV.FVMAIN_COMPACT]
 FvAlignment        = 8
