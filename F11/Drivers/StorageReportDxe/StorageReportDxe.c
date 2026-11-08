@@ -130,7 +130,7 @@ RepPrint (
 }
 
 /**
-  Print one block device and, if it has any, its partitions.
+  Print one block device.
 
   @param[in] Handle  The block device handle.
   @param[in] Index   Its position in the handle buffer, so the reader can refer
@@ -143,12 +143,8 @@ PrintBlockDevice (
   IN UINTN       Index
   )
 {
-  EFI_BLOCK_IO_PROTOCOL        *BlockIo;
-  EFI_HANDLE                  *PartHandles;
-  UINTN                       NoParts;
-  EFI_STATUS                  Status;
-  UINTN                       PartIndex;
-  UINT32                      BlockSize;
+  EFI_BLOCK_IO_PROTOCOL  *BlockIo;
+  EFI_STATUS             Status;
 
   Status = gBS->OpenProtocol (
                   Handle,
@@ -162,47 +158,58 @@ PrintBlockDevice (
     RepPrint (L"  [%2u] cannot open BlockIo (%r)\r\n", (UINT32)Index, Status);
     return;
   }
-  BlockSize = BlockIo->Media->BlockSize;
 
   RepPrint (L"  [%2u] %lu MB  (%u byte blocks)  mediaid=%u lastblock=%lu logical=%u\r\n",
             (UINT32)Index,
-            (UINT64)((BlockIo->Media->LastBlock + 1) * BlockSize / (1024 * 1024)),
-            BlockSize,
+            (UINT64)((BlockIo->Media->LastBlock + 1) * BlockIo->Media->BlockSize / (1024 * 1024)),
+            BlockIo->Media->BlockSize,
             BlockIo->Media->MediaId,
             (UINT64)BlockIo->Media->LastBlock,
             (UINT32)BlockIo->Media->LogicalPartition
             );
 
-  //
-  // Only a whole-disk handle has partition children. Listing them under every
-  // partition handle as well would repeat the whole GPT thirty-odd times and
-  // run the report past its cap, truncating the part that matters.
-  //
-  if (BlockIo->Media->LogicalPartition) {
-    gBS->CloseProtocol (Handle, &gEfiBlockIoProtocolGuid, NULL, NULL);
-    return;
-  }
+  gBS->CloseProtocol (Handle, &gEfiBlockIoProtocolGuid, NULL, NULL);
+}
+
+/**
+  Print every partition once, as its own section.
+
+  LocateHandleBuffer is global: it hands back the same partition set no matter
+  which device the caller is looking at. Enumerating under each whole-disk handle
+  therefore repeated the whole table once per UFS LUN -- six times here -- and ran
+  the report past its cap, truncating the part that matters.
+**/
+STATIC
+VOID
+PrintPartitions (
+  VOID
+  )
+{
+  EFI_HANDLE                   *PartHandles;
+  UINTN                        NoParts;
+  UINTN                        PartIndex;
+  EFI_STATUS                   Status;
+  EFI_PARTITION_INFO_PROTOCOL  *ThisPart;
+  EFI_BLOCK_IO_PROTOCOL        *BlockIo;
+  UINT32                       BlockSize;
 
   PartHandles = NULL;
   NoParts     = 0;
   Status      = gBS->LocateHandleBuffer (
-                         ByProtocol,
-                         &gStorageReportPartitionInfoGuid,
-                         NULL,
-                         &NoParts,
-                         &PartHandles
-                         );
+                       ByProtocol,
+                       &gStorageReportPartitionInfoGuid,
+                       NULL,
+                       &NoParts,
+                       &PartHandles
+                       );
   if (EFI_ERROR (Status) || (NoParts == 0) || (PartHandles == NULL)) {
-    RepPrint (L"        no PartitionInfo children (%r)\r\n", Status);
-    gBS->CloseProtocol (Handle, &gEfiBlockIoProtocolGuid, NULL, NULL);
+    RepPrint (L"\r\nNo PartitionInfo handle exists at all (%r).\r\n", Status);
     return;
   }
 
-  RepPrint (L"        %u GPT/MBR partition(s)\r\n", (UINT32)NoParts);
+  RepPrint (L"\r\n%u partition(s), in handle order:\r\n", (UINT32)NoParts);
 
   for (PartIndex = 0; PartIndex < NoParts; PartIndex++) {
-    EFI_PARTITION_INFO_PROTOCOL  *ThisPart;
-
     Status = gBS->HandleProtocol (
                      PartHandles[PartIndex],
                      &gStorageReportPartitionInfoGuid,
@@ -213,11 +220,27 @@ PrintBlockDevice (
     }
 
     //
+    // The LBAs are in units of the parent's block size, which the partition's own
+    // BlockIo carries. Reading it there keeps the MB column right on a 4Kn LUN.
+    //
+    BlockSize = 512;
+    if (!EFI_ERROR (gBS->HandleProtocol (
+                          PartHandles[PartIndex],
+                          &gEfiBlockIoProtocolGuid,
+                          (VOID **)&BlockIo
+                          )) &&
+        (BlockIo != NULL) && (BlockIo->Media != NULL))
+    {
+      BlockSize = BlockIo->Media->BlockSize;
+    }
+
+    //
     // PartitionName is null when the entry carries no name, which happens for
     // an MBR partition and for a zeroed GPT slot. Those are printed anyway, so
     // the list of sizes stays complete either way.
     //
-    RepPrint (L"        %-20s %6lu MB   LBA %lu..%lu\r\n",
+    RepPrint (L"  [%3u] %-20s %6lu MB   LBA %lu..%lu\r\n",
+              (UINT32)PartIndex,
               (ThisPart->PartitionName != NULL) ? ThisPart->PartitionName : L"<no name>",
               (UINT64)((ThisPart->EndingLBANumber - ThisPart->StartingLBANumber + 1) * BlockSize / (1024 * 1024)),
               (UINT64)ThisPart->StartingLBANumber,
@@ -226,7 +249,6 @@ PrintBlockDevice (
   }
 
   FreePool (PartHandles);
-  gBS->CloseProtocol (Handle, &gEfiBlockIoProtocolGuid, NULL, NULL);
 }
 
 /**
@@ -357,6 +379,8 @@ StorageReportReadyToBoot (
     }
     FreePool (Buffer);
   }
+
+  PrintPartitions ();
 
   //
   // Which volumes the firmware itself mounted. This answers "can anything read
