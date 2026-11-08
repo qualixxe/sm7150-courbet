@@ -173,24 +173,31 @@ PrintBlockDevice (
             );
 
   //
-  // A partition handle is not required to carry its own openable protocol
-  // instances, so the children are found by LocateHandleBuffer against the
-  // parent's interface rather than by opening anything on them.
+  // Only a whole-disk handle has partition children. Listing them under every
+  // partition handle as well would repeat the whole GPT thirty-odd times and
+  // run the report past its cap, truncating the part that matters.
   //
+  if (BlockIo->Media->LogicalPartition) {
+    gBS->CloseProtocol (Handle, &gEfiBlockIoProtocolGuid, NULL, NULL);
+    return;
+  }
+
   PartHandles = NULL;
   NoParts     = 0;
   Status      = gBS->LocateHandleBuffer (
                          ByProtocol,
                          &gStorageReportPartitionInfoGuid,
-                         (VOID *)Handle,
+                         NULL,
                          &NoParts,
                          &PartHandles
                          );
   if (EFI_ERROR (Status) || (NoParts == 0) || (PartHandles == NULL)) {
     RepPrint (L"        no PartitionInfo children (%r)\r\n", Status);
-    gBS->CloseProtocol (Handle, &gEfiBlockIoProtocolGuid, NULL, EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL);
+    gBS->CloseProtocol (Handle, &gEfiBlockIoProtocolGuid, NULL, NULL);
     return;
   }
+
+  RepPrint (L"        %u GPT/MBR partition(s)\r\n", (UINT32)NoParts);
 
   for (PartIndex = 0; PartIndex < NoParts; PartIndex++) {
     EFI_PARTITION_INFO_PROTOCOL  *ThisPart;
@@ -218,7 +225,7 @@ PrintBlockDevice (
   }
 
   FreePool (PartHandles);
-  gBS->CloseProtocol (Handle, &gEfiBlockIoProtocolGuid, NULL, EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL);
+  gBS->CloseProtocol (Handle, &gEfiBlockIoProtocolGuid, NULL, NULL);
 }
 
 /**
@@ -383,7 +390,7 @@ StorageReportReadyToBoot (
   @param[in] SystemTable  System table.
 
   @retval EFI_SUCCESS     The report is scheduled.
-  @retval EFI_NOT_READY   The event could not be created.
+  @retval other           The event could not be created.
 **/
 EFI_STATUS
 EFIAPI
@@ -393,41 +400,26 @@ StorageReportEntryPoint (
   )
 {
   EFI_EVENT  ReadyToBoot;
-  EFI_STATUS Status;
-  VOID       *Registration;
 
-  ReadyToBoot  = NULL;
-  Registration = NULL;
+  ReadyToBoot = NULL;
 
   //
   // Registering rather than printing here matters. At this point in DXE the
   // graphics output is not up yet and none of the drivers have connected, so
   // anything printed now would go nowhere and describe nothing.
   //
-  Status = gBS->CreateEvent (
-                  EVT_NOTIFY_SIGNAL,
-                  TPL_CALLBACK,
-                  StorageReportReadyToBoot,
-                  NULL,
-                  &ReadyToBoot
-                  );
-  if (EFI_ERROR (Status)) {
-    return Status;
-  }
-
+  // ReadyToBoot is an event GROUP, not a protocol: BDS signals it through
+  // CoreSignalEventGroup, and no protocol with that GUID is ever installed. So
+  // CreateEvent + RegisterProtocolNotify returns EFI_SUCCESS and then never
+  // fires -- which is exactly what happened, twice, with no error to show for
+  // it. EfiCreateEventReadyToBootEx is the CreateEventEx form that joins the
+  // group, and is what the one callback here that does run (LogFlushToFile in
+  // I2cClockDxe) uses.
   //
-  // Registration must not be NULL. DxeCore checks all three arguments and
-  // returns EFI_INVALID_PARAMETER for a NULL one, which silently cost this
-  // driver its only chance to run on the 03.11 and 08.11 boots.
-  //
-  Status = gBS->RegisterProtocolNotify (
-                  &gEfiEventReadyToBootGuid,
-                  ReadyToBoot,
-                  &Registration
-                  );
-  if (EFI_ERROR (Status)) {
-    gBS->CloseEvent (ReadyToBoot);
-  }
-
-  return Status;
+  return EfiCreateEventReadyToBootEx (
+           TPL_CALLBACK,
+           StorageReportReadyToBoot,
+           NULL,
+           &ReadyToBoot
+           );
 }
