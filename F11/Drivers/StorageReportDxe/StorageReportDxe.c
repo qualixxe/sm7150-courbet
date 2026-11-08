@@ -85,7 +85,7 @@ typedef struct {
 // define it ever appears.
 //
 EFI_GUID  gStorageReportPartitionInfoGuid =
-  { 0x8cf2f62c, 0xbc9b, 0x4821, { 0x9d, 0x14, 0x98, 0x9a, 0x78, 0xbe, 0x2e, 0xc5 } };
+  { 0x8cf2f62c, 0xbc9b, 0x4821, { 0x80, 0x8d, 0xec, 0x9e, 0xc4, 0x21, 0xa1, 0xa0 } };
 
 STATIC CHAR8  mReport[REPORT_CAP];
 STATIC UINTN  mReportLen = 0;
@@ -123,7 +123,8 @@ RepPrint (
     if (mReportLen + 1 >= REPORT_CAP) {
       break;
     }
-    mReport[mReportLen++] = (CHAR8)((Ch >= 0x20 && Ch < 0x7F) ? Ch : '?');
+    // Keep the newline: without it the whole report is one line on the host.
+    mReport[mReportLen++] = (CHAR8)((Ch == L'\n' || (Ch >= 0x20 && Ch < 0x7F)) ? Ch : '?');
   }
   mReport[mReportLen] = '\0';
 }
