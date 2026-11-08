@@ -37,6 +37,7 @@
 
 [Protocols]
   gEfiBlockIoProtocolGuid              ## CONSUMES
+  gEfiSimpleFileSystemProtocolGuid     ## CONSUMES
 
 #
 # Not under [Protocols]: gEfiEventReadyToBootGuid is a GUID, not a protocol,

@@ -1,5 +1,6 @@
 /** @file
-  Storage Report - prints the block devices and their partitions at boot.
+  Storage Report - prints the block devices and their partitions at boot, and
+  saves the same text as \STORAGE.TXT on every FAT volume.
 
   Why this exists
   ---------------
@@ -11,6 +12,10 @@
   runs at ReadyToBoot, when the graphical output is already up, prints what it
   found, and holds the screen for a while so it can be read or photographed
   before the menu draws over it.
+
+  The file is the channel that actually survives. A photo needs someone holding
+  the phone at the right second; \STORAGE.TXT can be pulled over adb in recovery
+  long after the boot moved on, even when Windows never started at all.
 
   What it prints
   --------------
@@ -42,13 +47,23 @@
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiDriverEntryPoint.h>
 #include <Library/MemoryAllocationLib.h>
+#include <Library/PrintLib.h>
+#include <Library/BaseLib.h>
 #include <Protocol/BlockIo.h>
+#include <Protocol/SimpleFileSystem.h>
 
 //
 // How long the report stays on the screen. Long enough to read off the phone,
 // short enough not to look like a hang.
 //
 #define REPORT_HOLD_SECONDS 20
+
+//
+// Enough for a full GPT (courbet has some fifty entries) times several block
+// devices, with room to spare. Static so the report cannot fail on a pool
+// allocation at the exact moment the machine is being diagnosed for failing.
+//
+#define REPORT_CAP 32768
 
 //
 // EFI_PARTITION_INFO_PROTOCOL, PI 1.8 section 10.5.
@@ -71,6 +86,47 @@ typedef struct {
 //
 EFI_GUID  gStorageReportPartitionInfoGuid =
   { 0x8cf2f62c, 0xbc9b, 0x4821, { 0x9d, 0x14, 0x98, 0x9a, 0x78, 0xbe, 0x2e, 0xc5 } };
+
+STATIC CHAR8  mReport[REPORT_CAP];
+STATIC UINTN  mReportLen = 0;
+
+/**
+  Emit one line to the screen and to the saved copy.
+
+  The copy is ASCII: it is read back on a Linux host with od and grep, which have
+  no interest in UTF-16. Anything outside printable ASCII becomes '?' rather than
+  being dropped, so a column never silently shifts.
+**/
+STATIC
+VOID
+RepPrint (
+  IN CONST CHAR16  *Format,
+  ...
+  )
+{
+  CHAR16   Wide[512];
+  VA_LIST  Args;
+  UINTN    Index;
+  CHAR16   Ch;
+
+  VA_START (Args, Format);
+  UnicodeVSPrint (Wide, sizeof (Wide), Format, Args);
+  VA_END (Args);
+
+  Print (L"%s", Wide);
+
+  for (Index = 0; Wide[Index] != L'\0'; Index++) {
+    Ch = Wide[Index];
+    if (Ch == L'\r') {
+      continue;
+    }
+    if (mReportLen + 1 >= REPORT_CAP) {
+      break;
+    }
+    mReport[mReportLen++] = (CHAR8)((Ch >= 0x20 && Ch < 0x7F) ? Ch : '?');
+  }
+  mReport[mReportLen] = '\0';
+}
 
 /**
   Print one block device and, if it has any, its partitions.
@@ -97,20 +153,24 @@ PrintBlockDevice (
                   Handle,
                   &gEfiBlockIoProtocolGuid,
                   (VOID **)&BlockIo,
-                  EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL,
                   NULL,
-                  NULL
+                  NULL,
+                  EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
                   );
   if (EFI_ERROR (Status) || (BlockIo == NULL) || (BlockIo->Media == NULL)) {
+    RepPrint (L"  [%2u] cannot open BlockIo (%r)\r\n", (UINT32)Index, Status);
     return;
   }
   BlockSize = BlockIo->Media->BlockSize;
 
-  Print (L"  [%2d] %lu MB  (%lu byte blocks)\r\n",
-         (UINT32)Index,
-         (UINT32)((BlockIo->Media->LastBlock + 1) * BlockSize / (1024 * 1024)),
-         (UINT32)BlockSize
-         );
+  RepPrint (L"  [%2u] %lu MB  (%u byte blocks)  mediaid=%u lastblock=%lu logical=%u\r\n",
+            (UINT32)Index,
+            (UINT64)((BlockIo->Media->LastBlock + 1) * BlockSize / (1024 * 1024)),
+            BlockSize,
+            BlockIo->Media->MediaId,
+            (UINT64)BlockIo->Media->LastBlock,
+            (UINT32)BlockIo->Media->LogicalPartition
+            );
 
   //
   // A partition handle is not required to carry its own openable protocol
@@ -127,6 +187,7 @@ PrintBlockDevice (
                          &PartHandles
                          );
   if (EFI_ERROR (Status) || (NoParts == 0) || (PartHandles == NULL)) {
+    RepPrint (L"        no PartitionInfo children (%r)\r\n", Status);
     gBS->CloseProtocol (Handle, &gEfiBlockIoProtocolGuid, NULL, EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL);
     return;
   }
@@ -148,12 +209,12 @@ PrintBlockDevice (
     // an MBR partition and for a zeroed GPT slot. Those are printed anyway, so
     // the list of sizes stays complete either way.
     //
-    Print (L"        %-20s %6lu MB   LBA %lu..%lu\r\n",
-           (ThisPart->PartitionName != NULL) ? ThisPart->PartitionName : L"<no name>",
-           (UINT32)((ThisPart->EndingLBANumber - ThisPart->StartingLBANumber + 1) * BlockSize / (1024 * 1024)),
-           (UINT32)ThisPart->StartingLBANumber,
-           (UINT32)ThisPart->EndingLBANumber
-           );
+    RepPrint (L"        %-20s %6lu MB   LBA %lu..%lu\r\n",
+              (ThisPart->PartitionName != NULL) ? ThisPart->PartitionName : L"<no name>",
+              (UINT64)((ThisPart->EndingLBANumber - ThisPart->StartingLBANumber + 1) * BlockSize / (1024 * 1024)),
+              (UINT64)ThisPart->StartingLBANumber,
+              (UINT64)ThisPart->EndingLBANumber
+              );
   }
 
   FreePool (PartHandles);
@@ -161,7 +222,66 @@ PrintBlockDevice (
 }
 
 /**
-  Put the whole report on the screen.
+  Save the report on every FAT volume, before the OS loader runs.
+**/
+STATIC
+VOID
+SaveReport (
+  VOID
+  )
+{
+  EFI_HANDLE                       *Handles;
+  UINTN                            Count;
+  UINTN                            Index;
+  EFI_STATUS                       Status;
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
+  EFI_FILE_PROTOCOL                *Root;
+  EFI_FILE_PROTOCOL                *File;
+  UINTN                            WriteLen;
+
+  Handles = NULL;
+  Count   = 0;
+  Status  = gBS->LocateHandleBuffer (
+                   ByProtocol,
+                   &gEfiSimpleFileSystemProtocolGuid,
+                   NULL,
+                   &Count,
+                   &Handles
+                   );
+  if (EFI_ERROR (Status) || (Handles == NULL) || (Count == 0)) {
+    return;
+  }
+
+  for (Index = 0; Index < Count; Index++) {
+    if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs))) {
+      continue;
+    }
+    if (EFI_ERROR (Fs->OpenVolume (Fs, &Root))) {
+      continue;
+    }
+
+    //
+    // Truncate any previous run's file, so a stale report can never be mistaken
+    // for this boot's.
+    //
+    File = NULL;
+    if (!EFI_ERROR (Root->Open (Root, &File, L"STORAGE.TXT", EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0)) && (File != NULL)) {
+      File->Delete (File);
+    }
+    File = NULL;
+    if (!EFI_ERROR (Root->Open (Root, &File, L"STORAGE.TXT", EFI_FILE_MODE_CREATE | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_READ, 0)) && (File != NULL)) {
+      WriteLen = mReportLen;
+      File->Write (File, &WriteLen, mReport);
+      File->Close (File);
+    }
+    Root->Close (Root);
+  }
+
+  gBS->FreePool (Handles);
+}
+
+/**
+  Put the whole report on the screen and on disk.
 
   No arguments beyond the event's, and it returns nothing: this is called from an
   event notification and must not affect the boot result.
@@ -180,11 +300,15 @@ StorageReportReadyToBoot (
   UINTN       Index;
   EFI_HANDLE  *SecondBuffer;
   UINTN       SecondCount;
+  EFI_HANDLE  *FsHandles;
+  UINTN       FsCount;
 
-  Print (L"\r\n");
-  Print (L"========================================================\r\n");
-  Print (L"  STORAGE REPORT - no keyboard needed\r\n");
-  Print (L"========================================================\r\n");
+  mReportLen = 0;
+  mReport[0] = '\0';
+
+  RepPrint (L"========================================================\r\n");
+  RepPrint (L"  COURBET STORAGE REPORT\r\n");
+  RepPrint (L"========================================================\r\n");
 
   Status = gBS->LocateHandleBuffer (
                   ByProtocol,
@@ -194,10 +318,10 @@ StorageReportReadyToBoot (
                   &Buffer
                   );
   if (EFI_ERROR (Status) || (NoHandles == 0) || (Buffer == NULL)) {
-    Print (L"\r\nNo BlockIo handle exists at all.\r\n");
-    Print (L"The storage driver never registered anything.\r\n");
+    RepPrint (L"\r\nNo BlockIo handle exists at all (%r).\r\n", Status);
+    RepPrint (L"The storage driver never registered anything.\r\n");
   } else {
-    Print (L"\r\n%u block device(s):\r\n", (UINT32)NoHandles);
+    RepPrint (L"\r\n%u block device(s):\r\n", (UINT32)NoHandles);
     for (Index = 0; Index < NoHandles; Index++) {
       PrintBlockDevice (Buffer[Index], Index);
     }
@@ -217,7 +341,7 @@ StorageReportReadyToBoot (
                             &SecondBuffer
                             );
     if (!EFI_ERROR (Status) && (SecondCount > NoHandles)) {
-      Print (L"\r\nRe-checked: %u now exist, more drivers connected.\r\n", (UINT32)SecondCount);
+      RepPrint (L"\r\nRe-checked: %u now exist, more drivers connected.\r\n", (UINT32)SecondCount);
       for (Index = 0; Index < SecondCount; Index++) {
         PrintBlockDevice (SecondBuffer[Index], Index);
       }
@@ -226,11 +350,28 @@ StorageReportReadyToBoot (
     FreePool (Buffer);
   }
 
-  Print (L"\r\n--------------------------------------------------------\r\n");
-  Print (L"  A partition of tens of GB means the controller enumerated\r\n");
-  Print (L"  it and storage works. UEFI still cannot mount it: only Fat\r\n");
-  Print (L"  is in this build and these partitions are ext4 and f2fs.\r\n");
-  Print (L"\r\nMenu in %d seconds.\r\n", REPORT_HOLD_SECONDS);
+  //
+  // Which volumes the firmware itself mounted. This answers "can anything read
+  // the installer media" independently of whatever Windows does afterwards.
+  //
+  FsHandles = NULL;
+  FsCount   = 0;
+  Status    = gBS->LocateHandleBuffer (
+                     ByProtocol,
+                     &gEfiSimpleFileSystemProtocolGuid,
+                     NULL,
+                     &FsCount,
+                     &FsHandles
+                     );
+  RepPrint (L"\r\nSimpleFileSystem volumes: %u (%r)\r\n",
+            EFI_ERROR (Status) ? 0 : (UINT32)FsCount, Status);
+  if (FsHandles != NULL) {
+    FreePool (FsHandles);
+  }
+
+  RepPrint (L"========================================================\r\n");
+
+  SaveReport ();
 
   gBS->Stall (REPORT_HOLD_SECONDS * 1000000);
 }
@@ -253,8 +394,10 @@ StorageReportEntryPoint (
 {
   EFI_EVENT  ReadyToBoot;
   EFI_STATUS Status;
+  VOID       *Registration;
 
-  ReadyToBoot = NULL;
+  ReadyToBoot  = NULL;
+  Registration = NULL;
 
   //
   // Registering rather than printing here matters. At this point in DXE the
@@ -272,10 +415,15 @@ StorageReportEntryPoint (
     return Status;
   }
 
+  //
+  // Registration must not be NULL. DxeCore checks all three arguments and
+  // returns EFI_INVALID_PARAMETER for a NULL one, which silently cost this
+  // driver its only chance to run on the 03.11 and 08.11 boots.
+  //
   Status = gBS->RegisterProtocolNotify (
                   &gEfiEventReadyToBootGuid,
                   ReadyToBoot,
-                  NULL
+                  &Registration
                   );
   if (EFI_ERROR (Status)) {
     gBS->CloseEvent (ReadyToBoot);
