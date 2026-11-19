@@ -36,6 +36,7 @@
 #include "PlatformBm.h"
 
 #define DP_NODE_LEN(Type) { (UINT8)sizeof (Type), (UINT8)(sizeof (Type) >> 8) }
+#define PLATFORM_USB_WAIT_SECONDS 60
 
 #pragma pack (1)
 typedef struct {
@@ -459,19 +460,32 @@ PlatformBootUsbFirst (
   EFI_BOOT_MANAGER_LOAD_OPTION  *BootOptions;
   UINTN                         BootOptionCount;
   UINTN                         Index;
+  UINTN                         Retry;
 
-  BootOptions = EfiBootManagerGetLoadOptions (&BootOptionCount, LoadOptionTypeBoot);
-  for (Index = 0; Index < BootOptionCount; Index++) {
-    if (!PlatformBootOptionUsesUsb (&BootOptions[Index])) {
-      continue;
+  // Give a USB-OTG drive time to enumerate. This is deliberately bounded:
+  // after the wait, the normal internal-UFS BootOrder remains the fallback.
+  for (Retry = 0; Retry <= PLATFORM_USB_WAIT_SECONDS; Retry++) {
+    if (Retry != 0) {
+      gBS->Stall (1000 * 1000);
     }
 
-    DEBUG ((DEBUG_INFO, "PlatformBm: preferring USB boot option %u\n", BootOptions[Index].OptionNumber));
-    EfiBootManagerBoot (&BootOptions[Index]);
-    break;
-  }
+    EfiBootManagerConnectAll ();
+    EfiBootManagerRefreshAllBootOption ();
+    BootOptions = EfiBootManagerGetLoadOptions (&BootOptionCount, LoadOptionTypeBoot);
+    for (Index = 0; Index < BootOptionCount; Index++) {
+      if (!PlatformBootOptionUsesUsb (&BootOptions[Index])) {
+        continue;
+      }
 
-  EfiBootManagerFreeLoadOptions (BootOptions, BootOptionCount);
+      DEBUG ((DEBUG_INFO, "PlatformBm: USB boot option %u found after %u s\n",
+              BootOptions[Index].OptionNumber, Retry));
+      EfiBootManagerBoot (&BootOptions[Index]);
+      EfiBootManagerFreeLoadOptions (BootOptions, BootOptionCount);
+      return;
+    }
+
+    EfiBootManagerFreeLoadOptions (BootOptions, BootOptionCount);
+  }
 }
 STATIC
 VOID
