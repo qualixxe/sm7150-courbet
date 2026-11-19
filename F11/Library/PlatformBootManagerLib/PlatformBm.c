@@ -459,7 +459,6 @@ PlatformBootUsbFirst (
   EFI_BOOT_MANAGER_LOAD_OPTION  *BootOptions;
   UINTN                         BootOptionCount;
   UINTN                         Index;
-  EFI_STATUS                    Status;
 
   BootOptions = EfiBootManagerGetLoadOptions (&BootOptionCount, LoadOptionTypeBoot);
   for (Index = 0; Index < BootOptionCount; Index++) {
@@ -468,8 +467,7 @@ PlatformBootUsbFirst (
     }
 
     DEBUG ((DEBUG_INFO, "PlatformBm: preferring USB boot option %u\n", BootOptions[Index].OptionNumber));
-    Status = EfiBootManagerBoot (&BootOptions[Index]);
-    DEBUG ((DEBUG_ERROR, "PlatformBm: USB boot option returned %r\n", Status));
+    EfiBootManagerBoot (&BootOptions[Index]);
     break;
   }
 
