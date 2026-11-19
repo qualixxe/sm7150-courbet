@@ -178,7 +178,6 @@
   # a keyboard. sweetbuild.sh builds against this DSC, not F11.dsc, so listing
   # the module only in the other one leaves it invisible here.
   #
-  F11/Drivers/StorageReportDxe/StorageReportDxe.inf
 
   #
   # DXE

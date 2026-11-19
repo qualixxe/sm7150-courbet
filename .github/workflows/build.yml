@@ -46,7 +46,7 @@ jobs:
 
       - name: Build firmware
         run: |
-          bash ./courbetbuild.sh
+          TARGET=RELEASE bash ./courbetbuild.sh
 
       - name: Build device tree variants
         run: |

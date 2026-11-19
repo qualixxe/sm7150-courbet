@@ -273,7 +273,6 @@
   # a module listed in the FDF but absent from the DSC fails the build with
   # "NOT found in DSC file", which is what happened on the first attempt.
   #
-  F11/Drivers/StorageReportDxe/StorageReportDxe.inf
 
   #
   # Bds

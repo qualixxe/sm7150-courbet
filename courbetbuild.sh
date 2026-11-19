@@ -1,21 +1,26 @@
 #!/bin/bash
-# based on the instructions from edk2-platform
+# Courbet UEFI build. Release is the safe/default image for phone boot.
 set -e
 . build_common.sh
-# 编译前需清除残留
 PYTHON_COMMAND=python2.7
-rm -rf workspace/Build/F11/DEBUG_GCC5/FV/Ffs/7E374E25-8E01-4FEE-87F2-390C23C606CDFVMAIN
-# not actually GCC5; it's GCC7 on Ubuntu 18.04.
-# >>> Recompila a DSDT (DSDT.dsl -> DSDT.aml) ANTES do build, pra garantir que edits no
-#     DSDT (ex: reativar o TSC1) entrem no firmware. Sem isso, o build usa o .aml VELHO.
-echo "[DSDT] recompilando DSDT.dsl -> DSDT.aml ..."
+TARGET="${TARGET:-RELEASE}"
+case "$TARGET" in
+  DEBUG|RELEASE) ;;
+  *) echo "TARGET must be DEBUG or RELEASE (got: $TARGET)" >&2; exit 2 ;;
+esac
+BUILD_DIR="Build/F11/${TARGET}_GCC5"
+rm -rf "$BUILD_DIR/FV/Ffs/7E374E25-8E01-4FEE-87F2-390C23C606CDFVMAIN"
+echo "[BUILD] F11 sweet TARGET=$TARGET"
+echo "[DSDT] recompiling DSDT.dsl -> DSDT.aml ..."
 ( cd F11/AcpiTables && iasl DSDT.dsl )
-GCC5_AARCH64_PREFIX=aarch64-linux-gnu- build -s -n 0 -a AARCH64 -t GCC5 -p F11/sweet.dsc
-gzip -c < Build/F11/DEBUG_GCC5/FV/F11_UEFI.fd >uefi_image5
+GCC5_AARCH64_PREFIX=aarch64-linux-gnu- build -b "$TARGET" -s -n 0 -a AARCH64 -t GCC5 -p F11/sweet.dsc
+gzip -c < "$BUILD_DIR/FV/F11_UEFI.fd" > uefi_image5
 cat sweet.dtb >> uefi_image5
 abootimg --create courbet_uefi.img -k uefi_image5 -r ramdisk-null -f bootimg.cfg
-echo "================ [VERIFY] ================"
-echo "[VERIFY] FVs com GDGT9897 (TSC1/touch courbet, SPI SE4):"; grep -al GDGT9897 Build/F11/DEBUG_GCC5/FV/*.Fv 2>/dev/null || echo "   NENHUM -> TSC1 NAO entrou no firmware!"
-echo "[VERIFY] FVs com QCOM1411 (IC10):"; grep -al QCOM1411 Build/F11/DEBUG_GCC5/FV/*.Fv 2>/dev/null || echo "   NENHUM"
-echo "========================================="
-rm uefi_image* Build/ -rf
+echo "[VERIFY] FVs with GDGT9897 (courbet touch, SPI SE4):"
+grep -al GDGT9897 "$BUILD_DIR/FV"/*.Fv 2>/dev/null || echo "  none"
+echo "[VERIFY] FVs with QCOM1411 (IC10):"
+grep -al QCOM1411 "$BUILD_DIR/FV"/*.Fv 2>/dev/null || echo "  none"
+echo "[DONE] courbet_uefi.img ($TARGET)"
+rm -f uefi_image5
+rm -rf Build/
