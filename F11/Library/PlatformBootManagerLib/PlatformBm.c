@@ -453,38 +453,116 @@ PlatformBootOptionUsesUsb (
 
 STATIC
 VOID
-PlatformBootUsbFirst (
+PlatformBootSelect (
   VOID
   )
 {
   EFI_BOOT_MANAGER_LOAD_OPTION  *BootOptions;
   UINTN                         BootOptionCount;
   UINTN                         Index;
-  UINTN                         Retry;
+  UINTN                         UsbIndex;
+  UINTN                         UfsIndex;
+  UINTN                         SelectedIndex;
+  UINTN                         Second;
+  EFI_INPUT_KEY                Key;
+  BOOLEAN                      SelectUsb;
+  BOOLEAN                      HaveUsb;
+  BOOLEAN                      HaveUfs;
+  BOOLEAN                      BootNow;
 
-  // Give a USB-OTG drive time to enumerate. This is deliberately bounded:
-  // after the wait, the normal internal-UFS BootOrder remains the fallback.
-  for (Retry = 0; Retry <= PLATFORM_USB_WAIT_SECONDS; Retry++) {
-    if (Retry != 0) {
-      gBS->Stall (1000 * 1000);
-    }
-
+  // This is the small platform-owned Courbet selector. It never writes storage:
+  // it only chooses an existing EFI boot option, then hands it to BDS.
+  SelectUsb = TRUE;
+  for (Second = 0; Second <= PLATFORM_USB_WAIT_SECONDS; Second++) {
     EfiBootManagerConnectAll ();
     EfiBootManagerRefreshAllBootOption ();
     BootOptions = EfiBootManagerGetLoadOptions (&BootOptionCount, LoadOptionTypeBoot);
-    for (Index = 0; Index < BootOptionCount; Index++) {
-      if (!PlatformBootOptionUsesUsb (&BootOptions[Index])) {
-        continue;
-      }
 
-      DEBUG ((DEBUG_INFO, "PlatformBm: USB boot option %u found after %u s\n",
-              BootOptions[Index].OptionNumber, Retry));
-      EfiBootManagerBoot (&BootOptions[Index]);
-      EfiBootManagerFreeLoadOptions (BootOptions, BootOptionCount);
-      return;
+    UsbIndex = MAX_UINTN;
+    UfsIndex = MAX_UINTN;
+    for (Index = 0; Index < BootOptionCount; Index++) {
+      if (PlatformBootOptionUsesUsb (&BootOptions[Index])) {
+        if (UsbIndex == MAX_UINTN) {
+          UsbIndex = Index;
+        }
+      } else if (UfsIndex == MAX_UINTN) {
+        // The first non-USB option is the internal UFS/super fallback.
+        UfsIndex = Index;
+      }
+    }
+
+    HaveUsb = (UsbIndex != MAX_UINTN);
+    HaveUfs = (UfsIndex != MAX_UINTN);
+    if (!HaveUsb) {
+      SelectUsb = FALSE;
+    } else if (!HaveUfs) {
+      SelectUsb = TRUE;
+    }
+
+    if (gST->ConOut != NULL) {
+      gST->ConOut->ClearScreen (gST->ConOut);
+      gST->ConOut->OutputString (gST->ConOut, L"COURBET UEFI\r\n\r\n");
+      gST->ConOut->OutputString (gST->ConOut,
+        L"Select boot source (no flashing or formatting):\r\n\r\n");
+      gST->ConOut->OutputString (gST->ConOut,
+        SelectUsb ? L"> [1] USB / OTG\r\n" : L"  [1] USB / OTG\r\n");
+      if (HaveUsb) {
+        gST->ConOut->OutputString (gST->ConOut, L"      detected\r\n");
+      } else {
+        gST->ConOut->OutputString (gST->ConOut, L"      waiting for OTG...\r\n");
+      }
+      gST->ConOut->OutputString (gST->ConOut,
+        SelectUsb ? L"  [2] Internal UFS (super)\r\n" : L"> [2] Internal UFS (super)\r\n");
+      if (!HaveUfs) {
+        gST->ConOut->OutputString (gST->ConOut, L"      not detected\r\n");
+      }
+      gST->ConOut->OutputString (gST->ConOut,
+        L"\r\nVolume Up/Down: move    Power/Enter: boot\r\n");
+      gST->ConOut->OutputString (gST->ConOut,
+        L"Keyboard: arrows or 1/2, Enter\r\n");
+      Print (L"\r\nAuto-select in %u s...\r\n", PLATFORM_USB_WAIT_SECONDS - Second);
+    }
+
+    BootNow = FALSE;
+    if (gST->ConIn != NULL) {
+      while (!EFI_ERROR (gST->ConIn->ReadKeyStroke (gST->ConIn, &Key))) {
+        if ((Key.ScanCode == SCAN_VOLUME_UP) ||
+            (Key.ScanCode == SCAN_UP) ||
+            (Key.ScanCode == SCAN_LEFT) ||
+            (Key.UnicodeChar == L'1')) {
+          if (HaveUsb) {
+            SelectUsb = TRUE;
+          }
+        } else if ((Key.ScanCode == SCAN_VOLUME_DOWN) ||
+                   (Key.ScanCode == SCAN_DOWN) ||
+                   (Key.ScanCode == SCAN_RIGHT) ||
+                   (Key.UnicodeChar == L'2')) {
+          if (HaveUfs) {
+            SelectUsb = FALSE;
+          }
+        } else if ((Key.ScanCode == SCAN_SUSPEND) ||
+                   (Key.UnicodeChar == CHAR_CARRIAGE_RETURN) ||
+                   (Key.UnicodeChar == L'\n')) {
+          BootNow = TRUE;
+          break;
+        }
+      }
+    }
+
+    if (BootNow || (Second == PLATFORM_USB_WAIT_SECONDS)) {
+      SelectedIndex = SelectUsb ? UsbIndex : UfsIndex;
+      if (SelectedIndex != MAX_UINTN) {
+        DEBUG ((DEBUG_INFO, "PlatformBm: selected %a boot option %u\n",
+                SelectUsb ? "USB" : "UFS",
+                BootOptions[SelectedIndex].OptionNumber));
+        EfiBootManagerBoot (&BootOptions[SelectedIndex]);
+        EfiBootManagerFreeLoadOptions (BootOptions, BootOptionCount);
+        return;
+      }
     }
 
     EfiBootManagerFreeLoadOptions (BootOptions, BootOptionCount);
+    gBS->Stall (1000 * 1000);
   }
 }
 STATIC
@@ -664,7 +742,7 @@ PlatformBootManagerAfterConsole (
 
   EfiBootManagerRefreshAllBootOption ();
 
-  PlatformBootUsbFirst ();
+  PlatformBootSelect ();
 
   PlatformRegisterOptionsAndKeys ();
 }
