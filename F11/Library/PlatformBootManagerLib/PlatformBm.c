@@ -427,6 +427,55 @@ PlatformRegisterFvBootOption (
 
 
 STATIC
+BOOLEAN
+PlatformBootOptionUsesUsb (
+  IN EFI_BOOT_MANAGER_LOAD_OPTION  *Option
+  )
+{
+  EFI_DEVICE_PATH_PROTOCOL  *Node;
+
+  if ((Option == NULL) || (Option->FilePath == NULL)) {
+    return FALSE;
+  }
+
+  for (Node = Option->FilePath; !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
+    if ((DevicePathType (Node) == MESSAGING_DEVICE_PATH) &&
+        ((DevicePathSubType (Node) == MSG_USB_DP) ||
+         (DevicePathSubType (Node) == MSG_USB_CLASS_DP)))
+    {
+      return TRUE;
+    }
+  }
+
+  return FALSE;
+}
+
+STATIC
+VOID
+PlatformBootUsbFirst (
+  VOID
+  )
+{
+  EFI_BOOT_MANAGER_LOAD_OPTION  *BootOptions;
+  UINTN                         BootOptionCount;
+  UINTN                         Index;
+  EFI_STATUS                    Status;
+
+  BootOptions = EfiBootManagerGetLoadOptions (&BootOptionCount, LoadOptionTypeBoot);
+  for (Index = 0; Index < BootOptionCount; Index++) {
+    if (!PlatformBootOptionUsesUsb (&BootOptions[Index])) {
+      continue;
+    }
+
+    DEBUG ((DEBUG_INFO, "PlatformBm: preferring USB boot option %u\n", BootOptions[Index].OptionNumber));
+    Status = EfiBootManagerBoot (&BootOptions[Index]);
+    DEBUG ((DEBUG_ERROR, "PlatformBm: USB boot option returned %r\n", Status));
+    break;
+  }
+
+  EfiBootManagerFreeLoadOptions (BootOptions, BootOptionCount);
+}
+STATIC
 VOID
 PlatformRegisterOptionsAndKeys (
   VOID
@@ -602,6 +651,8 @@ PlatformBootManagerAfterConsole (
   }
 
   EfiBootManagerRefreshAllBootOption ();
+
+  PlatformBootUsbFirst ();
 
   PlatformRegisterOptionsAndKeys ();
 }
