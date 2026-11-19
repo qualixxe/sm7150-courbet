@@ -26,6 +26,7 @@
 #include <Library/UefiLib.h>
 #include <Library/PrintLib.h>
 #include <Protocol/DevicePath.h>
+#include <Protocol/KeypadDevice.h>
 #include <Protocol/EsrtManagement.h>
 #include <Protocol/GraphicsOutput.h>
 #include <Protocol/LoadedImage.h>
@@ -451,6 +452,129 @@ PlatformBootOptionUsesUsb (
   return FALSE;
 }
 
+STATIC KEYPAD_DEVICE_PROTOCOL  *mPlatformKeypadDevice;
+STATIC UINT16                   mPlatformKeyScanCode;
+
+STATIC
+VOID
+EFIAPI
+PlatformCaptureKey (
+  IN KEYPAD_RETURN_API  *This,
+  IN EFI_KEY_DATA       *KeyData
+  )
+{
+  if (KeyData != NULL) {
+    mPlatformKeyScanCode = KeyData->Key.ScanCode;
+  }
+}
+
+STATIC
+VOID
+PlatformInitKeypad (
+  VOID
+  )
+{
+  EFI_HANDLE                  *Handles;
+  UINTN                       HandleCount;
+  UINTN                       Index;
+  EFI_STATUS                  Status;
+
+  if (mPlatformKeypadDevice != NULL) {
+    return;
+  }
+
+  Status = gBS->LocateHandleBuffer (
+                  ByProtocol,
+                  &gEFIDroidKeypadDeviceProtocolGuid,
+                  NULL,
+                  &HandleCount,
+                  &Handles
+                  );
+  if (EFI_ERROR (Status)) {
+    return;
+  }
+
+  for (Index = 0; Index < HandleCount; Index++) {
+    Status = gBS->HandleProtocol (
+                    Handles[Index],
+                    &gEFIDroidKeypadDeviceProtocolGuid,
+                    (VOID **)&mPlatformKeypadDevice
+                    );
+    if (!EFI_ERROR (Status)) {
+      break;
+    }
+    mPlatformKeypadDevice = NULL;
+  }
+  gBS->FreePool (Handles);
+}
+
+STATIC
+UINT16
+PlatformPollKeypad (
+  VOID
+  )
+{
+  KEYPAD_RETURN_API  ReturnApi;
+
+  PlatformInitKeypad ();
+  mPlatformKeyScanCode = SCAN_NULL;
+  if (mPlatformKeypadDevice == NULL) {
+    return SCAN_NULL;
+  }
+
+  ReturnApi.PushEfikeyBufTail = PlatformCaptureKey;
+  mPlatformKeypadDevice->GetKeys (mPlatformKeypadDevice, &ReturnApi, 0);
+  return mPlatformKeyScanCode;
+}
+
+STATIC
+VOID
+PlatformBootMenuDraw (
+  IN BOOLEAN  SelectUsb,
+  IN BOOLEAN  HaveUsb,
+  IN BOOLEAN  HaveUfs,
+  IN UINTN    Remaining
+  )
+{
+  if (gST->ConOut == NULL) {
+    return;
+  }
+
+  gST->ConOut->ClearScreen (gST->ConOut);
+  gST->ConOut->SetAttribute (gST->ConOut, EFI_LIGHTGRAY | EFI_BACKGROUND_BLACK);
+  gST->ConOut->OutputString (gST->ConOut,
+    L"+--------------------------------------------------+\r\n");
+  gST->ConOut->SetAttribute (gST->ConOut, EFI_YELLOW | EFI_BACKGROUND_BLACK);
+  gST->ConOut->OutputString (gST->ConOut,
+    L"|                 COURBET UEFI                    |\r\n");
+  gST->ConOut->SetAttribute (gST->ConOut, EFI_LIGHTGRAY | EFI_BACKGROUND_BLACK);
+  gST->ConOut->OutputString (gST->ConOut,
+    L"+--------------------------------------------------+\r\n\r\n");
+  gST->ConOut->OutputString (gST->ConOut,
+    L"  Select where to boot. No flashing or formatting.\r\n\r\n");
+
+  if (SelectUsb) {
+    gST->ConOut->SetAttribute (gST->ConOut, EFI_LIGHTGRAY | EFI_BACKGROUND_BLUE);
+  }
+  gST->ConOut->OutputString (gST->ConOut,
+    HaveUsb ? L"  > [1]  USB / OTG       [detected]             \r\n"
+            : L"    [1]  USB / OTG       [waiting for OTG]      \r\n");
+  gST->ConOut->SetAttribute (gST->ConOut, EFI_LIGHTGRAY | EFI_BACKGROUND_BLACK);
+  gST->ConOut->OutputString (gST->ConOut, L"\r\n");
+
+  if (!SelectUsb) {
+    gST->ConOut->SetAttribute (gST->ConOut, EFI_LIGHTGRAY | EFI_BACKGROUND_BLUE);
+  }
+  gST->ConOut->OutputString (gST->ConOut,
+    HaveUfs ? L"  > [2]  Internal UFS     [super]               \r\n"
+            : L"    [2]  Internal UFS     [not detected]        \r\n");
+  gST->ConOut->SetAttribute (gST->ConOut, EFI_LIGHTGRAY | EFI_BACKGROUND_BLACK);
+  gST->ConOut->OutputString (gST->ConOut,
+    L"\r\n  Volume Up/Down: select     Power: boot\r\n"
+    L"  Keyboard arrows/1/2 + Enter also work\r\n\r\n");
+  Print (L"  Automatic choice in %u seconds...\r\n", Remaining);
+}
+
 STATIC
 VOID
 PlatformBootSelect (
@@ -464,14 +588,15 @@ PlatformBootSelect (
   UINTN                         UfsIndex;
   UINTN                         SelectedIndex;
   UINTN                         Second;
+  UINTN                         Poll;
+  UINT16                        ButtonScanCode;
   EFI_INPUT_KEY                Key;
   BOOLEAN                      SelectUsb;
   BOOLEAN                      HaveUsb;
   BOOLEAN                      HaveUfs;
   BOOLEAN                      BootNow;
 
-  // This is the small platform-owned Courbet selector. It never writes storage:
-  // it only chooses an existing EFI boot option, then hands it to BDS.
+  PlatformInitKeypad ();
   SelectUsb = TRUE;
   for (Second = 0; Second <= PLATFORM_USB_WAIT_SECONDS; Second++) {
     EfiBootManagerConnectAll ();
@@ -486,7 +611,6 @@ PlatformBootSelect (
           UsbIndex = Index;
         }
       } else if (UfsIndex == MAX_UINTN) {
-        // The first non-USB option is the internal UFS/super fallback.
         UfsIndex = Index;
       }
     }
@@ -499,53 +623,49 @@ PlatformBootSelect (
       SelectUsb = TRUE;
     }
 
-    if (gST->ConOut != NULL) {
-      gST->ConOut->ClearScreen (gST->ConOut);
-      gST->ConOut->OutputString (gST->ConOut, L"COURBET UEFI\r\n\r\n");
-      gST->ConOut->OutputString (gST->ConOut,
-        L"Select boot source (no flashing or formatting):\r\n\r\n");
-      gST->ConOut->OutputString (gST->ConOut,
-        SelectUsb ? L"> [1] USB / OTG\r\n" : L"  [1] USB / OTG\r\n");
-      if (HaveUsb) {
-        gST->ConOut->OutputString (gST->ConOut, L"      detected\r\n");
-      } else {
-        gST->ConOut->OutputString (gST->ConOut, L"      waiting for OTG...\r\n");
-      }
-      gST->ConOut->OutputString (gST->ConOut,
-        SelectUsb ? L"  [2] Internal UFS (super)\r\n" : L"> [2] Internal UFS (super)\r\n");
-      if (!HaveUfs) {
-        gST->ConOut->OutputString (gST->ConOut, L"      not detected\r\n");
-      }
-      gST->ConOut->OutputString (gST->ConOut,
-        L"\r\nVolume Up/Down: move    Power/Enter: boot\r\n");
-      gST->ConOut->OutputString (gST->ConOut,
-        L"Keyboard: arrows or 1/2, Enter\r\n");
-      Print (L"\r\nAuto-select in %u s...\r\n", PLATFORM_USB_WAIT_SECONDS - Second);
-    }
-
+    PlatformBootMenuDraw (SelectUsb, HaveUsb, HaveUfs,
+                          PLATFORM_USB_WAIT_SECONDS - Second);
     BootNow = FALSE;
-    if (gST->ConIn != NULL) {
-      while (!EFI_ERROR (gST->ConIn->ReadKeyStroke (gST->ConIn, &Key))) {
-        if ((Key.ScanCode == SCAN_VOLUME_UP) ||
-            (Key.ScanCode == SCAN_UP) ||
-            (Key.ScanCode == SCAN_LEFT) ||
-            (Key.UnicodeChar == L'1')) {
-          if (HaveUsb) {
+
+    // Poll both the physical PMIC buttons and the normal UEFI input queue.
+    // Stall alone does not dispatch the KeypadDxe timer, so the PMIC protocol
+    // is sampled directly here at 20 ms intervals.
+    for (Poll = 0; Poll < 50 && !BootNow; Poll++) {
+      ButtonScanCode = PlatformPollKeypad ();
+      if ((ButtonScanCode == SCAN_VOLUME_UP) && HaveUsb) {
+        SelectUsb = TRUE;
+        PlatformBootMenuDraw (SelectUsb, HaveUsb, HaveUfs,
+                              PLATFORM_USB_WAIT_SECONDS - Second);
+      } else if ((ButtonScanCode == SCAN_VOLUME_DOWN) && HaveUfs) {
+        SelectUsb = FALSE;
+        PlatformBootMenuDraw (SelectUsb, HaveUsb, HaveUfs,
+                              PLATFORM_USB_WAIT_SECONDS - Second);
+      } else if (ButtonScanCode == SCAN_SUSPEND) {
+        BootNow = TRUE;
+      }
+
+      if (gST->ConIn != NULL) {
+        while (!EFI_ERROR (gST->ConIn->ReadKeyStroke (gST->ConIn, &Key))) {
+          if (((Key.ScanCode == SCAN_UP) || (Key.ScanCode == SCAN_LEFT) ||
+               (Key.UnicodeChar == L'1')) && HaveUsb) {
             SelectUsb = TRUE;
-          }
-        } else if ((Key.ScanCode == SCAN_VOLUME_DOWN) ||
-                   (Key.ScanCode == SCAN_DOWN) ||
-                   (Key.ScanCode == SCAN_RIGHT) ||
-                   (Key.UnicodeChar == L'2')) {
-          if (HaveUfs) {
+            PlatformBootMenuDraw (SelectUsb, HaveUsb, HaveUfs,
+                                  PLATFORM_USB_WAIT_SECONDS - Second);
+          } else if (((Key.ScanCode == SCAN_DOWN) ||
+                      (Key.ScanCode == SCAN_RIGHT) ||
+                      (Key.UnicodeChar == L'2')) && HaveUfs) {
             SelectUsb = FALSE;
+            PlatformBootMenuDraw (SelectUsb, HaveUsb, HaveUfs,
+                                  PLATFORM_USB_WAIT_SECONDS - Second);
+          } else if ((Key.UnicodeChar == CHAR_CARRIAGE_RETURN) ||
+                     (Key.UnicodeChar == L'\n')) {
+            BootNow = TRUE;
+            break;
           }
-        } else if ((Key.ScanCode == SCAN_SUSPEND) ||
-                   (Key.UnicodeChar == CHAR_CARRIAGE_RETURN) ||
-                   (Key.UnicodeChar == L'\n')) {
-          BootNow = TRUE;
-          break;
         }
+      }
+      if (!BootNow) {
+        gBS->Stall (20 * 1000);
       }
     }
 
@@ -562,7 +682,6 @@ PlatformBootSelect (
     }
 
     EfiBootManagerFreeLoadOptions (BootOptions, BootOptionCount);
-    gBS->Stall (1000 * 1000);
   }
 }
 STATIC
